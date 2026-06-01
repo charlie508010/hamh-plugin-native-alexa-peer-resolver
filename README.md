@@ -1,30 +1,44 @@
-# HAMH Native Alexa Peer Resolver
+# hamh-plugin-native-alexa-peer-resolver
 
-Importierbares HAMH-Plugin zur Alexa-Geräteerkennung ohne gespeicherte Amazon-Zugangsdaten.
+Resolve Alexa/Matter peer IDs to Echo device names in Home-Assistant-Matter-Hub logs.
 
-## Verwendung
+HAMH plugin only, experimental and unmaintained.
 
-1. In HAMH unter `Plugins` die erzeugte `.tgz` hochladen.
-2. Im Plugin `Amazon Login` öffnen.
-3. Im Browser bei Amazon anmelden.
-4. Danach `Scan Alexa Devices` ausführen.
+## Purpose
 
-Das Plugin speichert den Cookie-Jar lokal unter `/config/data/sqlite/alexa-cookie.json` und eine Kompatibilitätskopie unter `/config/data/alexa-cookie.json`. Cookies, Tokens und CSRF-Werte werden nicht geloggt.
+This plugin is an experimental helper for Home-Assistant-Matter-Hub.
 
-## Erzeugte Dateien
+Home-Assistant-Matter-Hub logs Matter controller sessions like this:
 
-- `/config/data/sqlite/alexa-login-status.json`
-- `/config/data/sqlite/alexa-cookie.json`
-- `/config/data/alexa-cookie.json`
-- `/config/data/sqlite/alexa-devices.json`
-- `/config/data/sqlite/alexa-peer-map.json`
-- `/config/data/alexa-peer-map.json`
+```text
+Bridge / 8~4aabdXXX Session 57225 (peer 1615190xxxx name="Raum Echo Dot"): subscriptions=0 | total: sessions=5
+```
 
-## Konfiguration
+The goal of this plugin is to help map Alexa/Matter peer IDs to readable Echo device names, so HAMH logs can show which Alexa/Echo device is currently communicating with the bridge.
 
-- `enabled`: Plugin aktivieren
-- `amazonDomain`: Amazon-Domain fuer Login
-- `alexaHost`: Alexa-Web-API Host
-- `proxyHost`: Host/IP fuer Browser-Popup
-- `proxyPort`: lokaler Proxy-Port
-- `scanInterval`: Scan-Intervall in Minuten
+To do this, the plugin can start a local Amazon login proxy. The user signs in through the browser. The plugin stores the resulting Amazon cookie jar locally and uses the Alexa web API to scan Alexa devices.
+
+The plugin does not store Amazon email, password, or 2FA codes.
+
+## Stored data
+
+```text
+/config/data/sqlite/alexa-login-status.json
+/config/data/sqlite/alexa-cookie.json
+/config/data/alexa-cookie.json
+/config/data/sqlite/alexa-devices.json
+/config/data/sqlite/alexa-peer-map.json
+/config/data/alexa-peer-map.json
+```
+
+The plugin does not log cookies, tokens, CSRF values, passwords, 2FA codes, private keys, or full request headers.
+
+This plugin works only inside the Home-Assistant-Matter-Hub plugin system. It is not a standalone Alexa integration and not a Home Assistant add-on by itself.
+
+## Status
+
+This plugin is experimental and provided as-is.
+
+I created it for personal testing and do not currently have time to maintain it further. I do not provide support, guarantees, or warranty for this plugin.
+
+Use at your own risk.
