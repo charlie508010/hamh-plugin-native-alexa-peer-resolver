@@ -35,6 +35,29 @@ The plugin does not log cookies, tokens, CSRF values, passwords, 2FA codes, priv
 
 This plugin works only inside the Home-Assistant-Matter-Hub plugin system. It is not a standalone Alexa integration and not a Home Assistant add-on by itself.
 
+## Build plugin package
+
+Clone the repository and create the upload package:
+
+```bash
+git clone https://github.com/charlie508010/hamh-plugin-native-alexa-peer-resolver.git
+cd hamh-plugin-native-alexa-peer-resolver
+npm install
+npm pack
+```
+
+This creates a file like:
+
+```text
+hamh-plugin-native-alexa-peer-resolver-0.1.25.tgz
+```
+
+Upload this `.tgz` file in Home-Assistant-Matter-Hub:
+
+```text
+Plugins -> Upload
+```
+
 ## Status
 
 This plugin is experimental and provided as-is.
