@@ -37,6 +37,8 @@ The plugin does not log cookies, tokens, CSRF values, passwords, 2FA codes, priv
 
 Voice-history scanning can be enabled or disabled in the plugin configuration. The same configuration controls whether GENERAL, WAKE_WORD_ONLY, and ROUTINES_3P records are shown and whether visible entries are written to the log.
 
+When HAMH exposes diagnostic events to plugins, the plugin can also scan Voice History shortly after a Matter-triggered Home Assistant action. It then logs the nearest Alexa voice-history entry together with the HA entity and action, for example which Echo heard the command for a light switch. This is event-triggered and does not poll continuously.
+
 This plugin works only inside the Home-Assistant-Matter-Hub plugin system. It is not a standalone Alexa integration and not a Home Assistant add-on by itself.
 
 ## Build plugin package
@@ -53,7 +55,7 @@ npm pack
 This creates a file like:
 
 ```text
-hamh-plugin-native-alexa-peer-resolver-0.1.30.tgz
+hamh-plugin-native-alexa-peer-resolver-0.1.31.tgz
 ```
 
 Upload this `.tgz` file in Home-Assistant-Matter-Hub:

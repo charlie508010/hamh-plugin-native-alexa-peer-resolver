@@ -18,6 +18,9 @@ const DEFAULT_CONFIG = Object.freeze({
   voiceHistoryShowWakeWordOnly: false,
   voiceHistoryShowRoutines3p: false,
   voiceHistoryLogEntries: true,
+  voiceHistoryAfterActionEnabled: true,
+  voiceHistoryAfterActionDelaySeconds: 2,
+  voiceHistoryActionMatchWindowSeconds: 10,
   uiActions: JSON.stringify(
     [
       {
@@ -517,7 +520,18 @@ function mergeConfig(config = {}) {
       config.voiceHistoryShowRoutines3p ??
       DEFAULT_CONFIG.voiceHistoryShowRoutines3p,
     voiceHistoryLogEntries:
-      config.voiceHistoryLogEntries ?? DEFAULT_CONFIG.voiceHistoryLogEntries
+      config.voiceHistoryLogEntries ?? DEFAULT_CONFIG.voiceHistoryLogEntries,
+    voiceHistoryAfterActionEnabled:
+      config.voiceHistoryAfterActionEnabled ??
+      DEFAULT_CONFIG.voiceHistoryAfterActionEnabled,
+    voiceHistoryAfterActionDelaySeconds: Number(
+      config.voiceHistoryAfterActionDelaySeconds ??
+        DEFAULT_CONFIG.voiceHistoryAfterActionDelaySeconds
+    ),
+    voiceHistoryActionMatchWindowSeconds: Number(
+      config.voiceHistoryActionMatchWindowSeconds ??
+        DEFAULT_CONFIG.voiceHistoryActionMatchWindowSeconds
+    )
   };
 }
 
@@ -1198,6 +1212,43 @@ function logVoiceHistoryRecords(context, records) {
   }
 }
 
+function numericConfig(value, fallback, min, max) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, number));
+}
+
+function detailsFromDiagnosticEvent(event) {
+  const details = event?.details && typeof event.details === "object"
+    ? event.details
+    : {};
+  return {
+    action: String(details.action ?? ""),
+    entityId: String(event?.entityId ?? details.entityId ?? ""),
+    data: details.data && typeof details.data === "object" ? details.data : {},
+    timestamp: Number.isFinite(event?.timestamp) ? Number(event.timestamp) : Date.now()
+  };
+}
+
+function findNearestVoiceHistoryRecord(action, records, windowMs) {
+  let best = null;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const record of records) {
+    if (!Number.isFinite(record?.timestamp)) {
+      continue;
+    }
+    const distance = Math.abs(Number(record.timestamp) - action.timestamp);
+    if (distance > windowMs || distance >= bestDistance) {
+      continue;
+    }
+    best = record;
+    bestDistance = distance;
+  }
+  return best;
+}
+
 function labelForTableColumn(key) {
   return {
     time: "Time",
@@ -1352,21 +1403,26 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.30";
+  static version = "0.1.31";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.30";
+  version = "0.1.31";
 
   constructor(config = {}) {
     this.context = {};
     this.config = mergeConfig(config);
     this.server = null;
     this.proxyRunning = false;
+    this.unsubscribeDiagnostics = null;
+    this.voiceHistoryActionTimer = null;
+    this.pendingVoiceHistoryActions = [];
+    this.voiceHistoryActionScanRunning = false;
   }
 
   async onStart(context) {
     this.context = context;
     await ensureDataDirs();
+    this.subscribeToHomeAssistantActions();
   }
 
   getConfigSchema() {
@@ -1412,6 +1468,22 @@ export default class NativeAlexaPeerResolverPlugin {
           type: "boolean",
           default: true,
           title: "Voice History ins Log schreiben"
+        },
+        voiceHistoryAfterActionEnabled: {
+          type: "boolean",
+          default: true,
+          title: "Voice History nach Schaltbefehl abfragen",
+          description: "Nach einem Matter-Schaltbefehl wird die Alexa Voice History kurz danach einmal abgefragt und mit dem geschalteten Entity im Log verknüpft."
+        },
+        voiceHistoryAfterActionDelaySeconds: {
+          type: "number",
+          default: 2,
+          title: "Voice History Abfrageverzögerung Sekunden"
+        },
+        voiceHistoryActionMatchWindowSeconds: {
+          type: "number",
+          default: 10,
+          title: "Voice History Zuordnungsfenster Sekunden"
         },
         uiActions: {
           type: "string",
@@ -1462,6 +1534,148 @@ export default class NativeAlexaPeerResolverPlugin {
         return this.deleteCookie();
       default:
         return { ok: false, error: `Unknown action: ${actionId}` };
+    }
+  }
+
+  subscribeToHomeAssistantActions() {
+    this.unsubscribeFromHomeAssistantActions();
+    if (
+      this.config.voiceHistoryEnabled === false ||
+      this.config.voiceHistoryAfterActionEnabled === false
+    ) {
+      return;
+    }
+
+    if (typeof this.context?.subscribeDiagnosticEvents !== "function") {
+      logWarn(this.context, "Alexa voice history action trigger unavailable", {
+        reason: "plugin_context_no_diagnostic_subscription"
+      });
+      return;
+    }
+
+    this.unsubscribeDiagnostics = this.context.subscribeDiagnosticEvents((event) => {
+      this.handleDiagnosticEvent(event);
+    });
+    logInfo(this.context, "Alexa voice history action trigger enabled", {
+      delaySeconds: numericConfig(
+        this.config.voiceHistoryAfterActionDelaySeconds,
+        DEFAULT_CONFIG.voiceHistoryAfterActionDelaySeconds,
+        0,
+        30
+      ),
+      matchWindowSeconds: numericConfig(
+        this.config.voiceHistoryActionMatchWindowSeconds,
+        DEFAULT_CONFIG.voiceHistoryActionMatchWindowSeconds,
+        1,
+        60
+      )
+    });
+  }
+
+  unsubscribeFromHomeAssistantActions() {
+    if (typeof this.unsubscribeDiagnostics === "function") {
+      this.unsubscribeDiagnostics();
+    }
+    this.unsubscribeDiagnostics = null;
+    if (this.voiceHistoryActionTimer) {
+      clearTimeout(this.voiceHistoryActionTimer);
+      this.voiceHistoryActionTimer = null;
+    }
+  }
+
+  handleDiagnosticEvent(event) {
+    if (
+      event?.type !== "command_received" ||
+      this.config.voiceHistoryEnabled === false ||
+      this.config.voiceHistoryAfterActionEnabled === false
+    ) {
+      return;
+    }
+
+    const action = detailsFromDiagnosticEvent(event);
+    if (!action.action || !action.entityId) {
+      return;
+    }
+
+    this.pendingVoiceHistoryActions.push(action);
+    this.pendingVoiceHistoryActions = this.pendingVoiceHistoryActions.slice(-20);
+    const delaySeconds = numericConfig(
+      this.config.voiceHistoryAfterActionDelaySeconds,
+      DEFAULT_CONFIG.voiceHistoryAfterActionDelaySeconds,
+      0,
+      30
+    );
+
+    if (this.voiceHistoryActionTimer) {
+      clearTimeout(this.voiceHistoryActionTimer);
+    }
+    this.voiceHistoryActionTimer = setTimeout(() => {
+      this.scanVoiceHistoryForPendingActions().catch((error) => {
+        logWarn(this.context, "Alexa voice history action scan failed", {
+          error: sanitizeError(error)
+        });
+      });
+    }, delaySeconds * 1000);
+  }
+
+  async scanVoiceHistoryForPendingActions() {
+    if (this.voiceHistoryActionScanRunning) {
+      return;
+    }
+
+    const actions = this.pendingVoiceHistoryActions.splice(0);
+    this.voiceHistoryActionTimer = null;
+    if (actions.length === 0) {
+      return;
+    }
+
+    this.voiceHistoryActionScanRunning = true;
+    try {
+      const result = await this.performVoiceHistoryScan({ logEntries: false });
+      if (!result.ok) {
+        logWarn(this.context, "Alexa voice history action scan skipped", {
+          status: result.status
+        });
+        return;
+      }
+
+      this.logVoiceHistoryActionMatches(actions, result.records ?? []);
+    } finally {
+      this.voiceHistoryActionScanRunning = false;
+    }
+  }
+
+  logVoiceHistoryActionMatches(actions, records) {
+    const windowMs =
+      numericConfig(
+        this.config.voiceHistoryActionMatchWindowSeconds,
+        DEFAULT_CONFIG.voiceHistoryActionMatchWindowSeconds,
+        1,
+        60
+      ) * 1000;
+
+    for (const action of actions) {
+      const record = findNearestVoiceHistoryRecord(action, records, windowMs);
+      if (!record) {
+        logInfo(this.context, "Alexa voice history action match missing", {
+          actionTime: new Date(action.timestamp).toISOString(),
+          entityId: action.entityId,
+          action: action.action,
+          windowSeconds: windowMs / 1000
+        });
+        continue;
+      }
+
+      logInfo(this.context, "Alexa voice history action match", {
+        actionTime: new Date(action.timestamp).toISOString(),
+        entityId: action.entityId,
+        action: action.action,
+        voiceTime: record.time,
+        device: record.device,
+        status: record.status,
+        utterance: record.utterance || "-",
+        response: record.response || "-"
+      });
     }
   }
 
@@ -1672,6 +1886,20 @@ export default class NativeAlexaPeerResolverPlugin {
   }
 
   async scanVoiceHistory() {
+    const result = await this.performVoiceHistoryScan({
+      logEntries: this.config.voiceHistoryLogEntries !== false
+    });
+    return {
+      ok: result.ok,
+      status: result.status,
+      totalRecords: result.totalRecords,
+      transcriptRecords: result.transcriptRecords,
+      httpStatus: result.httpStatus
+    };
+  }
+
+  async performVoiceHistoryScan(options = {}) {
+    const logEntries = options.logEntries !== false;
     if (this.config.voiceHistoryEnabled === false) {
       await saveVoiceHistoryStatus({
         ok: false,
@@ -1679,7 +1907,7 @@ export default class NativeAlexaPeerResolverPlugin {
         recordCount: 0,
         transcriptCount: 0
       });
-      return { ok: false, status: "voice_history_disabled" };
+      return { ok: false, status: "voice_history_disabled", records: [] };
     }
 
     const jar = await loadCookieJar();
@@ -1699,7 +1927,7 @@ export default class NativeAlexaPeerResolverPlugin {
         loginUrl: "",
         cookieDiagnostics: diagnostics
       });
-      return { ok: false, status: "voice_history_login_required" };
+      return { ok: false, status: "voice_history_login_required", records: [] };
     }
 
     const csrfResult = await fetchAlexaActivityCsrf(jar, this.config);
@@ -1721,7 +1949,7 @@ export default class NativeAlexaPeerResolverPlugin {
         cookieDiagnostics: diagnostics,
         csrfPresent: false
       });
-      return { ok: false, status, httpStatus: csrfResult.httpStatus };
+      return { ok: false, status, httpStatus: csrfResult.httpStatus, records: [] };
     }
 
     const endTime = Date.now();
@@ -1764,7 +1992,7 @@ export default class NativeAlexaPeerResolverPlugin {
         cookieDiagnostics: diagnostics,
         csrfPresent: true
       });
-      return { ok: false, status, httpStatus: response.status };
+      return { ok: false, status, httpStatus: response.status, records: [] };
     }
 
     const payload = await response.json();
@@ -1792,7 +2020,7 @@ export default class NativeAlexaPeerResolverPlugin {
       records: rawRecords.length,
       transcripts: records.length
     });
-    if (this.config.voiceHistoryLogEntries !== false) {
+    if (logEntries) {
       logVoiceHistoryRecords(this.context, records);
     }
 
@@ -1800,7 +2028,9 @@ export default class NativeAlexaPeerResolverPlugin {
       ok: true,
       status: "voice_history_scanned",
       totalRecords: rawRecords.length,
-      transcriptRecords: records.length
+      transcriptRecords: records.length,
+      httpStatus: response.status,
+      records
     };
   }
 
@@ -1831,7 +2061,13 @@ export default class NativeAlexaPeerResolverPlugin {
     this.proxyRunning = false;
   }
 
+  async onConfigChanged(config) {
+    this.config = mergeConfig(config);
+    this.subscribeToHomeAssistantActions();
+  }
+
   async onShutdown() {
+    this.unsubscribeFromHomeAssistantActions();
     await this.stop();
   }
 }
