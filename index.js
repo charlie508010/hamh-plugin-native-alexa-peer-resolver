@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = Object.freeze({
   voiceHistoryShowGeneral: true,
   voiceHistoryShowWakeWordOnly: false,
   voiceHistoryShowRoutines3p: false,
+  voiceHistoryLogEntries: true,
   uiActions: JSON.stringify(
     [
       {
@@ -514,7 +515,9 @@ function mergeConfig(config = {}) {
       DEFAULT_CONFIG.voiceHistoryShowWakeWordOnly,
     voiceHistoryShowRoutines3p:
       config.voiceHistoryShowRoutines3p ??
-      DEFAULT_CONFIG.voiceHistoryShowRoutines3p
+      DEFAULT_CONFIG.voiceHistoryShowRoutines3p,
+    voiceHistoryLogEntries:
+      config.voiceHistoryLogEntries ?? DEFAULT_CONFIG.voiceHistoryLogEntries
   };
 }
 
@@ -1183,6 +1186,18 @@ function normalizeVoiceHistoryRecords(records, config) {
     .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 }
 
+function logVoiceHistoryRecords(context, records) {
+  for (const record of records) {
+    logInfo(context, "Alexa voice history entry", {
+      time: record.time,
+      device: record.device,
+      status: record.status,
+      utterance: record.utterance || "-",
+      response: record.response || "-"
+    });
+  }
+}
+
 function labelForTableColumn(key) {
   return {
     time: "Time",
@@ -1337,10 +1352,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.29";
+  static version = "0.1.30";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.29";
+  version = "0.1.30";
 
   constructor(config = {}) {
     this.context = {};
@@ -1392,6 +1407,11 @@ export default class NativeAlexaPeerResolverPlugin {
           type: "boolean",
           default: false,
           title: "Voice History: ROUTINES_3P anzeigen"
+        },
+        voiceHistoryLogEntries: {
+          type: "boolean",
+          default: true,
+          title: "Voice History ins Log schreiben"
         },
         uiActions: {
           type: "string",
@@ -1772,6 +1792,9 @@ export default class NativeAlexaPeerResolverPlugin {
       records: rawRecords.length,
       transcripts: records.length
     });
+    if (this.config.voiceHistoryLogEntries !== false) {
+      logVoiceHistoryRecords(this.context, records);
+    }
 
     return {
       ok: true,
