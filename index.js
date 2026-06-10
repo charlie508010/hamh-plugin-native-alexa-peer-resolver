@@ -75,7 +75,7 @@ const DEFAULT_CONFIG = Object.freeze({
         title: "Alexa Voice History",
         show: true,
         collapsible: true,
-        defaultCollapsed: true,
+        defaultCollapsed: false,
         emptyText: "No Alexa voice history scanned yet",
         source: "voice-history",
         columns: [
@@ -1293,10 +1293,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.27";
+  static version = "0.1.28";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.27";
+  version = "0.1.28";
 
   constructor(config = {}) {
     this.context = {};
