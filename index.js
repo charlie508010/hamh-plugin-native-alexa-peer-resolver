@@ -130,6 +130,7 @@ const ALEXA_DI_SDK_VERSION = "6.12.4";
 const ALEXA_APP_UA =
   `AmazonWebView/Amazon Alexa/${ALEXA_APP_VERSION}/iOS/${ALEXA_DI_OS_VERSION}/iPhone`;
 const VOICE_HISTORY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const VOICE_HISTORY_MATCH_DEDUPE_MS = 2000;
 const KNOWN_LOCAL_ALEXA_PEER_MAP = Object.freeze({
   "dc:91:bf:4f:81:32": { name: "Echo-Plus", serial: "G090XG10024605L7" },
   "68:9a:87:88:d3:94": { name: "Echo Katrin", serial: "G090U50984850PJ5" },
@@ -1249,6 +1250,16 @@ function findNearestVoiceHistoryRecord(action, records, windowMs) {
   return best;
 }
 
+function voiceHistoryActionMatchKey(action, record) {
+  return [
+    action.entityId,
+    action.action,
+    record.time,
+    record.device,
+    record.utterance
+  ].join("|");
+}
+
 function labelForTableColumn(key) {
   return {
     time: "Time",
@@ -1403,10 +1414,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.31";
+  static version = "0.1.32";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.31";
+  version = "0.1.32";
 
   constructor(config = {}) {
     this.context = {};
@@ -1416,6 +1427,7 @@ export default class NativeAlexaPeerResolverPlugin {
     this.unsubscribeDiagnostics = null;
     this.voiceHistoryActionTimer = null;
     this.pendingVoiceHistoryActions = [];
+    this.recentVoiceHistoryMatches = new Map();
     this.voiceHistoryActionScanRunning = false;
   }
 
@@ -1666,6 +1678,11 @@ export default class NativeAlexaPeerResolverPlugin {
         continue;
       }
 
+      const matchKey = voiceHistoryActionMatchKey(action, record);
+      if (this.isRecentVoiceHistoryMatch(matchKey, action.timestamp)) {
+        continue;
+      }
+
       logInfo(this.context, "Alexa voice history action match", {
         actionTime: new Date(action.timestamp).toISOString(),
         entityId: action.entityId,
@@ -1677,6 +1694,25 @@ export default class NativeAlexaPeerResolverPlugin {
         response: record.response || "-"
       });
     }
+  }
+
+  isRecentVoiceHistoryMatch(matchKey, timestamp) {
+    for (const [key, lastTimestamp] of this.recentVoiceHistoryMatches) {
+      if (timestamp - lastTimestamp > VOICE_HISTORY_MATCH_DEDUPE_MS) {
+        this.recentVoiceHistoryMatches.delete(key);
+      }
+    }
+
+    const lastTimestamp = this.recentVoiceHistoryMatches.get(matchKey);
+    if (
+      typeof lastTimestamp === "number" &&
+      Math.abs(timestamp - lastTimestamp) <= VOICE_HISTORY_MATCH_DEDUPE_MS
+    ) {
+      return true;
+    }
+
+    this.recentVoiceHistoryMatches.set(matchKey, timestamp);
+    return false;
   }
 
   async startLoginProxy() {
