@@ -13,6 +13,10 @@ const DEFAULT_CONFIG = Object.freeze({
   proxyHost: "172.20.48.110",
   proxyPort: 36701,
   scanInterval: 30,
+  voiceHistoryEnabled: true,
+  voiceHistoryShowGeneral: true,
+  voiceHistoryShowWakeWordOnly: false,
+  voiceHistoryShowRoutines3p: false,
   uiActions: JSON.stringify(
     [
       {
@@ -500,7 +504,17 @@ function mergeConfig(config = {}) {
     ...DEFAULT_CONFIG,
     ...config,
     proxyPort: Number(config.proxyPort ?? DEFAULT_CONFIG.proxyPort),
-    scanInterval: Number(config.scanInterval ?? DEFAULT_CONFIG.scanInterval)
+    scanInterval: Number(config.scanInterval ?? DEFAULT_CONFIG.scanInterval),
+    voiceHistoryEnabled:
+      config.voiceHistoryEnabled ?? DEFAULT_CONFIG.voiceHistoryEnabled,
+    voiceHistoryShowGeneral:
+      config.voiceHistoryShowGeneral ?? DEFAULT_CONFIG.voiceHistoryShowGeneral,
+    voiceHistoryShowWakeWordOnly:
+      config.voiceHistoryShowWakeWordOnly ??
+      DEFAULT_CONFIG.voiceHistoryShowWakeWordOnly,
+    voiceHistoryShowRoutines3p:
+      config.voiceHistoryShowRoutines3p ??
+      DEFAULT_CONFIG.voiceHistoryShowRoutines3p
   };
 }
 
@@ -1142,9 +1156,27 @@ function normalizeVoiceHistoryRecord(record, deviceMap) {
   };
 }
 
-function normalizeVoiceHistoryRecords(records) {
+function shouldIncludeVoiceHistoryRecord(record, config) {
+  const status = String(record?.activityStatus ?? "").toUpperCase();
+  const utteranceType = String(record?.utteranceType ?? "").toUpperCase();
+
+  if (utteranceType === "WAKE_WORD_ONLY") {
+    return config.voiceHistoryShowWakeWordOnly === true;
+  }
+  if (status === "ROUTINES_3P") {
+    return config.voiceHistoryShowRoutines3p === true;
+  }
+  if (status === "GENERAL") {
+    return config.voiceHistoryShowGeneral !== false;
+  }
+
+  return true;
+}
+
+function normalizeVoiceHistoryRecords(records, config) {
   const deviceMap = buildAlexaDeviceSerialMap();
   return (Array.isArray(records) ? records : [])
+    .filter((record) => shouldIncludeVoiceHistoryRecord(record, config))
     .map((record) => normalizeVoiceHistoryRecord(record, deviceMap))
     .filter(Boolean)
     .filter((record) => record.utterance || record.response)
@@ -1210,6 +1242,13 @@ function buildPluginTables(config) {
 
   return tables
     .filter((table) => table && table.show !== false)
+    .filter(
+      (table) =>
+        config.voiceHistoryEnabled !== false ||
+        !["voice-history", "alexa-voice-history.json"].includes(
+          table.source ?? table.file
+        )
+    )
     .map((table) => {
       const columns = Array.isArray(table.columns) ? table.columns : [];
       const source = table.source ?? table.file ?? "device-list";
@@ -1242,6 +1281,11 @@ function buildPluginActions(config, connected, loginUrl) {
 
   return actions
     .filter((action) => action && action.show !== false)
+    .filter(
+      (action) =>
+        config.voiceHistoryEnabled !== false ||
+        action.id !== "scanVoiceHistory"
+    )
     .filter((action) => {
       if (action.showWhen === "connected") {
         return connected;
@@ -1293,10 +1337,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.28";
+  static version = "0.1.29";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.28";
+  version = "0.1.29";
 
   constructor(config = {}) {
     this.context = {};
@@ -1329,6 +1373,26 @@ export default class NativeAlexaPeerResolverPlugin {
         proxyHost: { type: "string", default: "172.20.48.110", title: "Proxy Host" },
         proxyPort: { type: "number", default: 36701, title: "Proxy Port" },
         scanInterval: { type: "number", default: 30, title: "Scan Interval" },
+        voiceHistoryEnabled: {
+          type: "boolean",
+          default: true,
+          title: "Voice History aktiv"
+        },
+        voiceHistoryShowGeneral: {
+          type: "boolean",
+          default: true,
+          title: "Voice History: GENERAL anzeigen"
+        },
+        voiceHistoryShowWakeWordOnly: {
+          type: "boolean",
+          default: false,
+          title: "Voice History: WAKE_WORD_ONLY anzeigen"
+        },
+        voiceHistoryShowRoutines3p: {
+          type: "boolean",
+          default: false,
+          title: "Voice History: ROUTINES_3P anzeigen"
+        },
         uiActions: {
           type: "string",
           default: DEFAULT_CONFIG.uiActions,
@@ -1588,6 +1652,16 @@ export default class NativeAlexaPeerResolverPlugin {
   }
 
   async scanVoiceHistory() {
+    if (this.config.voiceHistoryEnabled === false) {
+      await saveVoiceHistoryStatus({
+        ok: false,
+        status: "voice_history_disabled",
+        recordCount: 0,
+        transcriptCount: 0
+      });
+      return { ok: false, status: "voice_history_disabled" };
+    }
+
     const jar = await loadCookieJar();
     const cookie = mergedCookieString(jar, this.config);
     const diagnostics = cookieDiagnostics(jar, this.config);
@@ -1677,7 +1751,7 @@ export default class NativeAlexaPeerResolverPlugin {
     const rawRecords = Array.isArray(payload.customerHistoryRecords)
       ? payload.customerHistoryRecords
       : [];
-    const records = normalizeVoiceHistoryRecords(rawRecords);
+    const records = normalizeVoiceHistoryRecords(rawRecords, this.config);
     await writeJson(VOICE_HISTORY_FILE, records);
     await saveVoiceHistoryStatus({
       ok: true,

@@ -35,6 +35,8 @@ The plugin does not store Amazon email, password, or 2FA codes.
 
 The plugin does not log cookies, tokens, CSRF values, passwords, 2FA codes, private keys, full request headers, or voice-history transcript text. Voice-history transcript text is stored only in the local voice-history JSON file and shown on the plugin page after the manual scan action.
 
+Voice-history scanning can be enabled or disabled in the plugin configuration. The same configuration controls whether GENERAL, WAKE_WORD_ONLY, and ROUTINES_3P records are shown.
+
 This plugin works only inside the Home-Assistant-Matter-Hub plugin system. It is not a standalone Alexa integration and not a Home Assistant add-on by itself.
 
 ## Build plugin package
@@ -51,7 +53,7 @@ npm pack
 This creates a file like:
 
 ```text
-hamh-plugin-native-alexa-peer-resolver-0.1.28.tgz
+hamh-plugin-native-alexa-peer-resolver-0.1.29.tgz
 ```
 
 Upload this `.tgz` file in Home-Assistant-Matter-Hub:
