@@ -1,7 +1,7 @@
 import express from "express";
 import { CookieJar } from "tough-cookie";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -30,6 +30,14 @@ const DEFAULT_CONFIG = Object.freeze({
         variant: "outlined",
         color: "primary",
         tooltip: "Refresh sanitized Alexa device list"
+      },
+      {
+        id: "scanVoiceHistory",
+        label: "Scan Voice History",
+        showWhen: "connected",
+        variant: "outlined",
+        color: "primary",
+        tooltip: "Fetch recent Alexa voice history"
       },
       {
         id: "deleteCookie",
@@ -61,6 +69,22 @@ const DEFAULT_CONFIG = Object.freeze({
           { key: "ip", label: "IP", width: "minmax(130px, 0.8fr)" },
           { key: "online", label: "Status", width: "minmax(100px, 0.7fr)", type: "status" }
         ]
+      },
+      {
+        id: "alexa-voice-history",
+        title: "Alexa Voice History",
+        show: true,
+        collapsible: true,
+        defaultCollapsed: true,
+        emptyText: "No Alexa voice history scanned yet",
+        source: "voice-history",
+        columns: [
+          { key: "time", label: "Time", width: "minmax(170px, 1fr)" },
+          { key: "device", label: "Echo", width: "minmax(150px, 1fr)" },
+          { key: "utterance", label: "Utterance", width: "minmax(240px, 1.6fr)" },
+          { key: "response", label: "Response", width: "minmax(240px, 1.6fr)" },
+          { key: "status", label: "Status", width: "minmax(130px, 0.8fr)", type: "chip" }
+        ]
       }
     ],
     null,
@@ -70,15 +94,24 @@ const DEFAULT_CONFIG = Object.freeze({
 
 const DATA_ROOT = "/config/data";
 const SQLITE_ROOT = path.join(DATA_ROOT, "sqlite");
-const COOKIE_FILE = path.join(SQLITE_ROOT, "alexa-cookie.json");
+const STORAGE_BACKEND =
+  process.env.HAMH_STORAGE_BACKEND === "file" ? "file" : "sqlite";
+const ACTIVE_ROOT = path.join(DATA_ROOT, STORAGE_BACKEND);
+const COOKIE_FILE = path.join(ACTIVE_ROOT, "alexa-cookie.json");
 const COOKIE_COPY_FILE = path.join(DATA_ROOT, "alexa-cookie.json");
-const LOGIN_DEVICE_FILE = path.join(SQLITE_ROOT, "alexa-login-device.json");
-const STATUS_FILE = path.join(SQLITE_ROOT, "alexa-login-status.json");
-const DEVICES_FILE = path.join(SQLITE_ROOT, "alexa-devices.json");
-const PEER_MAP_FILE = path.join(SQLITE_ROOT, "alexa-peer-map.json");
+const LOGIN_DEVICE_FILE = path.join(ACTIVE_ROOT, "alexa-login-device.json");
+const STATUS_FILE = path.join(ACTIVE_ROOT, "alexa-login-status.json");
+const DEVICES_FILE = path.join(ACTIVE_ROOT, "alexa-devices.json");
+const VOICE_HISTORY_FILE = path.join(ACTIVE_ROOT, "alexa-voice-history.json");
+const VOICE_HISTORY_STATUS_FILE = path.join(ACTIVE_ROOT, "alexa-voice-history-status.json");
+const PEER_MAP_FILE = path.join(ACTIVE_ROOT, "alexa-peer-map.json");
 const PEER_MAP_COPY_FILE = path.join(DATA_ROOT, "alexa-peer-map.json");
-const MATTER_PEERS_FILE = path.join(SQLITE_ROOT, "matter-peers.json");
+const MATTER_PEERS_FILE = path.join(ACTIVE_ROOT, "matter-peers.json");
 const MATTER_PEERS_FALLBACK_FILE = path.join(DATA_ROOT, "matter-peers.json");
+const SQLITE_COOKIE_FILE = path.join(SQLITE_ROOT, "alexa-cookie.json");
+const SQLITE_STATUS_FILE = path.join(SQLITE_ROOT, "alexa-login-status.json");
+const SQLITE_PEER_MAP_FILE = path.join(SQLITE_ROOT, "alexa-peer-map.json");
+const SQLITE_MATTER_PEERS_FILE = path.join(SQLITE_ROOT, "matter-peers.json");
 
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
@@ -88,6 +121,7 @@ const ALEXA_DI_OS_VERSION = "16.6";
 const ALEXA_DI_SDK_VERSION = "6.12.4";
 const ALEXA_APP_UA =
   `AmazonWebView/Amazon Alexa/${ALEXA_APP_VERSION}/iOS/${ALEXA_DI_OS_VERSION}/iPhone`;
+const VOICE_HISTORY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 const KNOWN_LOCAL_ALEXA_PEER_MAP = Object.freeze({
   "dc:91:bf:4f:81:32": { name: "Echo-Plus", serial: "G090XG10024605L7" },
   "68:9a:87:88:d3:94": { name: "Echo Katrin", serial: "G090U50984850PJ5" },
@@ -483,8 +517,60 @@ function parseJsonConfig(value, fallback) {
 }
 
 async function ensureDataDirs() {
-  await mkdir(SQLITE_ROOT, { recursive: true });
+  await mkdir(ACTIVE_ROOT, { recursive: true });
   await mkdir(DATA_ROOT, { recursive: true });
+  await migrateFileBackendDataIfNeeded();
+}
+
+async function migrateFileBackendDataIfNeeded() {
+  if (STORAGE_BACKEND !== "file") {
+    return;
+  }
+
+  await copyIfTargetNotUseful(
+    SQLITE_COOKIE_FILE,
+    COOKIE_FILE,
+    "alexa-cookie.json",
+    hasAnyJsonValue
+  );
+  await copyIfTargetNotUseful(
+    SQLITE_STATUS_FILE,
+    STATUS_FILE,
+    "alexa-login-status.json",
+    (value) => value?.connected === true
+  );
+  await copyIfTargetNotUseful(
+    SQLITE_PEER_MAP_FILE,
+    PEER_MAP_FILE,
+    "alexa-peer-map.json",
+    hasAnyJsonValue
+  );
+  await copyIfTargetNotUseful(
+    SQLITE_MATTER_PEERS_FILE,
+    MATTER_PEERS_FILE,
+    "matter-peers.json",
+    hasAnyJsonValue
+  );
+}
+
+async function copyIfTargetNotUseful(source, target, label, isUseful) {
+  const sourceValue = readJsonSync(source);
+  if (!isUseful(sourceValue) || isUseful(readJsonSync(target))) {
+    return;
+  }
+  await mkdir(path.dirname(target), { recursive: true });
+  await copyFile(source, target);
+  console.info(`Migrated ${label} from sqlite to file`);
+}
+
+function hasAnyJsonValue(value) {
+  if (Array.isArray(value)) {
+    return value.length > 0;
+  }
+  if (value && typeof value === "object") {
+    return Object.keys(value).length > 0;
+  }
+  return value != null;
 }
 
 async function readJson(file, fallback = undefined) {
@@ -553,6 +639,31 @@ async function saveStatus(status) {
   }
 
   await writeJson(STATUS_FILE, safeStatus);
+  return safeStatus;
+}
+
+async function saveVoiceHistoryStatus(status) {
+  const safeStatus = {
+    ok: Boolean(status.ok),
+    status: status.status ?? "unknown",
+    recordCount: Number.isFinite(status.recordCount) ? status.recordCount : 0,
+    transcriptCount: Number.isFinite(status.transcriptCount)
+      ? status.transcriptCount
+      : 0,
+    updatedAt: new Date().toISOString()
+  };
+
+  if (status.error) {
+    safeStatus.error = sanitizeError(status.error);
+  }
+  if (typeof status.httpStatus === "number") {
+    safeStatus.httpStatus = status.httpStatus;
+  }
+  if (typeof status.csrfPresent === "boolean") {
+    safeStatus.csrfPresent = status.csrfPresent;
+  }
+
+  await writeJson(VOICE_HISTORY_STATUS_FILE, safeStatus);
   return safeStatus;
 }
 
@@ -694,6 +805,54 @@ async function fetchAlexaCsrf(jar, config) {
   }
 
   return extractCsrfFromCookies(jar, config);
+}
+
+async function fetchAlexaActivityCsrf(jar, config) {
+  const cookie = mergedCookieString(jar, config);
+  const activityUrl = voiceHistoryActivityUrl(config);
+  const response = await fetch(activityUrl, {
+    method: "GET",
+    redirect: "manual",
+    headers: {
+      Cookie: cookie,
+      "User-Agent": BROWSER_UA,
+      "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+      Referer: `https://www.${config.amazonDomain}/`,
+      Origin: `https://www.${config.amazonDomain}`
+    }
+  });
+
+  const setCookie = response.headers.get("set-cookie");
+  if (setCookie) {
+    jar.setCookieSync(setCookie, `https://www.${config.amazonDomain}/`, {
+      ignoreError: true
+    });
+    await saveCookieJar(jar);
+  }
+
+  if (!response.ok) {
+    return {
+      csrf: "",
+      httpStatus: response.status,
+      location: response.headers.get("location") ?? ""
+    };
+  }
+
+  const text = await response.text().catch(() => "");
+  const csrf =
+    /meta name="csrf-token" content="([^"]+)"/i.exec(text)?.[1] ??
+    extractCsrfFromText(text);
+
+  return { csrf, httpStatus: response.status, location: "" };
+}
+
+function voiceHistoryActivityUrl(config) {
+  return `https://www.${config.amazonDomain}/alexa-privacy/apd/activity?disableGlobalNav=true&ref=activityHistory`;
+}
+
+function voiceHistoryRecordsUrl(config, startTime, endTime) {
+  return `https://www.${config.amazonDomain}/alexa-privacy/apd/rvh/customer-history-records-v2?startTime=${startTime}&endTime=${endTime}`;
 }
 
 function sanitizeAlexaDevice(device) {
@@ -907,8 +1066,98 @@ function buildDeviceListSync() {
   return buildDeviceList(alexaDevices, peerMap);
 }
 
+function buildAlexaDeviceSerialMap() {
+  const devices = readJsonSync(DEVICES_FILE, []);
+  const map = new Map();
+  for (const device of Array.isArray(devices) ? devices : []) {
+    const serial = device.serialNumber ?? device.deviceSerialNumber;
+    if (!serial) {
+      continue;
+    }
+    map.set(String(serial), {
+      name: device.accountName ?? device.name ?? "Unknown Alexa Device",
+      deviceType: device.deviceType ?? "",
+      deviceTypeLabel: device.deviceTypeLabel ?? formatDeviceTypeLabel(device.deviceType)
+    });
+  }
+
+  for (const known of Object.values(KNOWN_LOCAL_ALEXA_PEER_MAP)) {
+    if (!map.has(known.serial)) {
+      map.set(known.serial, {
+        name: known.name,
+        deviceType: "",
+        deviceTypeLabel: ""
+      });
+    }
+  }
+
+  return map;
+}
+
+function transcriptTextFromItems(items, itemTypes) {
+  return items
+    .filter((item) => itemTypes.includes(item.recordItemType))
+    .map((item) => String(item.transcriptText ?? "").trim())
+    .filter(Boolean)
+    .join(", ");
+}
+
+function serialFromVoiceHistoryRecord(record) {
+  const parts = String(record?.recordKey ?? "").split("#");
+  return parts[3] ?? "";
+}
+
+function normalizeVoiceHistoryRecord(record, deviceMap) {
+  const items = Array.isArray(record?.voiceHistoryRecordItems)
+    ? record.voiceHistoryRecordItems
+    : [];
+  const utterance = transcriptTextFromItems(items, [
+    "CUSTOMER_TRANSCRIPT",
+    "ASR_REPLACEMENT_TEXT"
+  ]);
+  const response = transcriptTextFromItems(items, [
+    "ALEXA_RESPONSE",
+    "TTS_REPLACEMENT_TEXT"
+  ]);
+
+  if (!utterance && record?.utteranceType === "WAKE_WORD_ONLY") {
+    return null;
+  }
+
+  const serial = serialFromVoiceHistoryRecord(record);
+  const device = deviceMap.get(serial);
+  const timestamp = Number(record?.timestamp);
+
+  return {
+    time: Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : "",
+    timestamp: Number.isFinite(timestamp) ? timestamp : null,
+    device: device?.name ?? (serial ? `Unknown Echo (${serial})` : "Unknown Echo"),
+    serial,
+    utterance,
+    response,
+    status: record?.activityStatus ?? record?.utteranceType ?? "",
+    utteranceType: record?.utteranceType ?? "",
+    deviceType: device?.deviceType ?? "",
+    deviceTypeLabel: device?.deviceTypeLabel ?? ""
+  };
+}
+
+function normalizeVoiceHistoryRecords(records) {
+  const deviceMap = buildAlexaDeviceSerialMap();
+  return (Array.isArray(records) ? records : [])
+    .map((record) => normalizeVoiceHistoryRecord(record, deviceMap))
+    .filter(Boolean)
+    .filter((record) => record.utterance || record.response)
+    .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
+}
+
 function labelForTableColumn(key) {
   return {
+    time: "Time",
+    device: "Echo",
+    utterance: "Utterance",
+    response: "Response",
+    status: "Status",
     name: "Name",
     serial: "Serial",
     deviceSerialNumber: "Device Serial",
@@ -929,7 +1178,7 @@ function typeForTableColumn(key) {
   if (key === "online") {
     return "status";
   }
-  if (key === "source" || key === "deviceFamily") {
+  if (key === "source" || key === "deviceFamily" || key === "status") {
     return "chip";
   }
   return "text";
@@ -937,6 +1186,9 @@ function typeForTableColumn(key) {
 
 function rowsForTableFile(tableFile) {
   switch (tableFile) {
+    case "voice-history":
+    case "alexa-voice-history.json":
+      return readJsonSync(VOICE_HISTORY_FILE, []);
     case "alexa-devices.json":
       return readJsonSync(DEVICES_FILE, []);
     case "alexa-peer-map.json":
@@ -1041,10 +1293,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.25";
+  static version = "0.1.27";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.25";
+  version = "0.1.27";
 
   constructor(config = {}) {
     this.context = {};
@@ -1120,6 +1372,8 @@ export default class NativeAlexaPeerResolverPlugin {
         return this.startLoginProxy();
       case "scanDevices":
         return this.scanDevices();
+      case "scanVoiceHistory":
+        return this.scanVoiceHistory();
       case "deleteCookie":
         return this.deleteCookie();
       default:
@@ -1333,8 +1587,135 @@ export default class NativeAlexaPeerResolverPlugin {
     };
   }
 
+  async scanVoiceHistory() {
+    const jar = await loadCookieJar();
+    const cookie = mergedCookieString(jar, this.config);
+    const diagnostics = cookieDiagnostics(jar, this.config);
+
+    if (!cookie || !isCookieJarAuthenticated(jar, this.config)) {
+      await saveVoiceHistoryStatus({
+        ok: false,
+        status: "voice_history_login_required",
+        recordCount: 0,
+        transcriptCount: 0
+      });
+      await saveStatus({
+        connected: false,
+        status: "voice_history_login_required",
+        loginUrl: "",
+        cookieDiagnostics: diagnostics
+      });
+      return { ok: false, status: "voice_history_login_required" };
+    }
+
+    const csrfResult = await fetchAlexaActivityCsrf(jar, this.config);
+    if (!csrfResult.csrf) {
+      const status = "voice_history_csrf_failed";
+      await saveVoiceHistoryStatus({
+        ok: false,
+        status,
+        recordCount: 0,
+        transcriptCount: 0,
+        httpStatus: csrfResult.httpStatus,
+        csrfPresent: false
+      });
+      await saveStatus({
+        connected: true,
+        status,
+        loginUrl: "",
+        error: status,
+        cookieDiagnostics: diagnostics,
+        csrfPresent: false
+      });
+      return { ok: false, status, httpStatus: csrfResult.httpStatus };
+    }
+
+    const endTime = Date.now();
+    const startTime = endTime - VOICE_HISTORY_LOOKBACK_MS;
+    const response = await fetch(
+      voiceHistoryRecordsUrl(this.config, startTime, endTime),
+      {
+        method: "POST",
+        redirect: "manual",
+        headers: {
+          Cookie: cookie,
+          "anti-csrftoken-a2z": csrfResult.csrf,
+          "User-Agent": BROWSER_UA,
+          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+          Accept: "application/json, text/plain, */*",
+          "Content-Type": "application/json",
+          Referer: voiceHistoryActivityUrl(this.config),
+          Origin: `https://www.${this.config.amazonDomain}`,
+          "X-Requested-With": "XMLHttpRequest"
+        },
+        body: JSON.stringify({ previousRequestToken: null })
+      }
+    );
+
+    if (!response.ok) {
+      const status = `voice_history_failed_${response.status}`;
+      await saveVoiceHistoryStatus({
+        ok: false,
+        status,
+        recordCount: 0,
+        transcriptCount: 0,
+        httpStatus: response.status,
+        csrfPresent: true
+      });
+      await saveStatus({
+        connected: true,
+        status,
+        loginUrl: "",
+        error: status,
+        cookieDiagnostics: diagnostics,
+        csrfPresent: true
+      });
+      return { ok: false, status, httpStatus: response.status };
+    }
+
+    const payload = await response.json();
+    const rawRecords = Array.isArray(payload.customerHistoryRecords)
+      ? payload.customerHistoryRecords
+      : [];
+    const records = normalizeVoiceHistoryRecords(rawRecords);
+    await writeJson(VOICE_HISTORY_FILE, records);
+    await saveVoiceHistoryStatus({
+      ok: true,
+      status: "voice_history_scanned",
+      recordCount: rawRecords.length,
+      transcriptCount: records.length,
+      httpStatus: response.status,
+      csrfPresent: true
+    });
+    await saveStatus({
+      connected: true,
+      status: "voice_history_scanned",
+      loginUrl: "",
+      cookieDiagnostics: diagnostics,
+      csrfPresent: true
+    });
+    logInfo(this.context, "Alexa voice history scanned", {
+      records: rawRecords.length,
+      transcripts: records.length
+    });
+
+    return {
+      ok: true,
+      status: "voice_history_scanned",
+      totalRecords: rawRecords.length,
+      transcriptRecords: records.length
+    };
+  }
+
   async deleteCookie() {
-    for (const file of [COOKIE_FILE, COOKIE_COPY_FILE, PEER_MAP_FILE, PEER_MAP_COPY_FILE]) {
+    for (const file of [
+      COOKIE_FILE,
+      COOKIE_COPY_FILE,
+      PEER_MAP_FILE,
+      PEER_MAP_COPY_FILE,
+      VOICE_HISTORY_FILE,
+      VOICE_HISTORY_STATUS_FILE
+    ]) {
       await rm(file, { force: true });
     }
 
