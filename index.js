@@ -1,7 +1,7 @@
 import express from "express";
 import { CookieJar } from "tough-cookie";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import crypto from "node:crypto";
 import path from "node:path";
@@ -627,9 +627,9 @@ function writeJsonSync(file, value) {
 
 async function writeJson(file, value) {
   await mkdir(path.dirname(file), { recursive: true });
-  await writeFile(`${file}.tmp`, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await rm(file, { force: true });
-  await import("node:fs/promises").then(({ rename }) => rename(`${file}.tmp`, file));
+  const tmpFile = `${file}.${process.pid}.${Date.now()}.${crypto.randomUUID()}.tmp`;
+  await writeFile(tmpFile, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(tmpFile, file);
 }
 
 function sanitizeError(error) {
@@ -1414,10 +1414,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.32";
+  static version = "0.1.33";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.32";
+  version = "0.1.33";
 
   constructor(config = {}) {
     this.context = {};

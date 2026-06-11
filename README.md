@@ -55,7 +55,7 @@ npm pack
 This creates a file like:
 
 ```text
-hamh-plugin-native-alexa-peer-resolver-0.1.31.tgz
+hamh-plugin-native-alexa-peer-resolver-0.1.33.tgz
 ```
 
 Upload this `.tgz` file in Home-Assistant-Matter-Hub:
