@@ -124,6 +124,7 @@ const SQLITE_MATTER_PEERS_FILE = path.join(SQLITE_ROOT, "matter-peers.json");
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const AMAZON_LOGIN_BASE_DOMAIN = "amazon.com";
+const VOICE_HISTORY_AMAZON_DOMAIN = "amazon.com";
 const ALEXA_APP_VERSION = "2.2.556530.0";
 const ALEXA_DI_OS_VERSION = "16.6";
 const ALEXA_DI_SDK_VERSION = "6.12.4";
@@ -181,7 +182,7 @@ function createAndSaveProxyLoginState() {
 }
 
 function buildAmazonLoginPath(config, loginState) {
-  const amazonDomain = config.amazonDomain;
+  const amazonDomain = VOICE_HISTORY_AMAZON_DOMAIN;
   const params = new URLSearchParams({
     "openid.return_to": `https://www.${amazonDomain}/ap/maplanding`,
     "openid.assoc_handle": "amzn_dp_project_dee_ios",
@@ -877,8 +878,7 @@ async function fetchAlexaCsrf(jar, config) {
 async function fetchAlexaActivityCsrf(jar, config) {
   const cookie = mergedCookieString(jar, config);
   const domains = [
-    config.amazonDomain,
-    AMAZON_LOGIN_BASE_DOMAIN
+    VOICE_HISTORY_AMAZON_DOMAIN
   ].filter((domain, index, all) => all.indexOf(domain) === index);
   let lastResult = { csrf: "", httpStatus: 0, location: "" };
 
@@ -933,11 +933,11 @@ async function fetchAlexaActivityCsrf(jar, config) {
 }
 
 function voiceHistoryActivityUrl(config) {
-  return `https://www.${config.amazonDomain}/alexa-privacy/apd/activity?disableGlobalNav=true&ref=activityHistory`;
+  return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/activity?disableGlobalNav=true&ref=activityHistory`;
 }
 
 function voiceHistoryRecordsUrl(config, startTime, endTime) {
-  return `https://www.${config.amazonDomain}/alexa-privacy/apd/rvh/customer-history-records-v2?startTime=${startTime}&endTime=${endTime}`;
+  return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/rvh/customer-history-records-v2?startTime=${startTime}&endTime=${endTime}`;
 }
 
 function sanitizeAlexaDevice(device) {
@@ -1467,10 +1467,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.39";
+  static version = "0.1.40";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.39";
+  version = "0.1.40";
 
   constructor(config = {}) {
     this.context = {};
@@ -2085,7 +2085,7 @@ export default class NativeAlexaPeerResolverPlugin {
           Accept: "application/json, text/plain, */*",
           "Content-Type": "application/json",
           Referer: voiceHistoryActivityUrl(this.config),
-          Origin: `https://www.${this.config.amazonDomain}`,
+          Origin: `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}`,
           "X-Requested-With": "XMLHttpRequest"
         },
         body: JSON.stringify({ previousRequestToken: null })
