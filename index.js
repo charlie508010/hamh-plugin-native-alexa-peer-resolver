@@ -836,6 +836,15 @@ function extractCsrfFromText(text) {
   return "";
 }
 
+function voiceHistoryDomainCandidates(config) {
+  return [
+    config.amazonDomain,
+    AMAZON_LOGIN_BASE_DOMAIN,
+    "amazon.de",
+    "amazon.com"
+  ].filter(Boolean).filter((domain, index, all) => all.indexOf(domain) === index);
+}
+
 async function fetchAlexaCsrf(jar, config) {
   const cookie = mergedCookieString(jar, config);
   for (const path of ["/spa/index.html", "/api/bootstrap?version=0"]) {
@@ -879,9 +888,7 @@ async function fetchAlexaCsrf(jar, config) {
 
 async function fetchAlexaActivityCsrf(jar, config) {
   const cookie = mergedCookieString(jar, config);
-  const domains = [
-    config.amazonDomain
-  ].filter((domain, index, all) => all.indexOf(domain) === index);
+  const domains = [config.amazonDomain].filter((domain, index, all) => all.indexOf(domain) === index);
   let lastResult = { csrf: "", httpStatus: 0, location: "" };
 
   for (const domain of domains) {
@@ -1299,7 +1306,74 @@ function voiceHistoryPayloadSummary(payload) {
       payload && typeof payload === "object" ? Object.keys(payload).slice(0, 20) : [],
     hasCustomerHistoryRecords: Array.isArray(payload?.customerHistoryRecords),
     hasRecords: Array.isArray(payload?.records),
-    hasActivities: Array.isArray(payload?.activities)
+    hasActivities: Array.isArray(payload?.activities),
+    noDataFoundWithinTimeLimit:
+      typeof payload?.noDataFoundWithinTimeLimit === "boolean"
+        ? payload.noDataFoundWithinTimeLimit
+        : undefined,
+    lastRecordTimestamp: payload?.lastRecordTimestamp ?? undefined,
+    encodedRequestTokenPresent: Boolean(payload?.encodedRequestToken)
+  };
+}
+
+async function scanVoiceHistoryDomain(jar, baseConfig, domain, startTime, endTime) {
+  const config = { ...baseConfig, amazonDomain: domain };
+  const csrfResult = await fetchAlexaActivityCsrf(jar, config);
+  const summary = {
+    domain,
+    csrfPresent: Boolean(csrfResult.csrf),
+    csrfHttpStatus: csrfResult.httpStatus,
+    csrfLocation: csrfResult.location ? "present" : ""
+  };
+
+  if (!csrfResult.csrf) {
+    return {
+      ok: false,
+      status: "voice_history_csrf_failed",
+      httpStatus: csrfResult.httpStatus,
+      result: null,
+      fallbackSummary: null,
+      summary
+    };
+  }
+
+  const cookie = mergedCookieString(jar, config);
+  let result = await fetchVoiceHistoryV2(cookie, csrfResult.csrf, config, startTime, endTime);
+  let fallbackSummary = null;
+
+  summary.source = result.source;
+  summary.httpStatus = result.httpStatus;
+  summary.recordCount = result.rawRecords.length;
+  summary.payloadSummary = result.payload ? voiceHistoryPayloadSummary(result.payload) : null;
+
+  if (result.ok && result.rawRecords.length === 0) {
+    const legacyResult = await fetchVoiceHistoryLegacy(cookie, csrfResult.csrf, config, startTime, endTime);
+    fallbackSummary = {
+      source: legacyResult.source,
+      ok: legacyResult.ok,
+      httpStatus: legacyResult.httpStatus,
+      recordCount: legacyResult.rawRecords.length,
+      payloadSummary: legacyResult.payload
+        ? voiceHistoryPayloadSummary(legacyResult.payload)
+        : null
+    };
+    summary.fallback = fallbackSummary;
+    if (legacyResult.ok && legacyResult.rawRecords.length > 0) {
+      result = legacyResult;
+      summary.source = result.source;
+      summary.httpStatus = result.httpStatus;
+      summary.recordCount = result.rawRecords.length;
+      summary.payloadSummary = result.payload ? voiceHistoryPayloadSummary(result.payload) : null;
+    }
+  }
+
+  return {
+    ok: result.ok,
+    status: result.ok ? "voice_history_scanned" : `voice_history_failed_${result.httpStatus}`,
+    httpStatus: result.httpStatus,
+    result,
+    fallbackSummary,
+    summary
   };
 }
 
@@ -1581,10 +1655,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.45";
+  static version = "0.1.46";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.45";
+  version = "0.1.46";
 
   constructor(config = {}) {
     this.context = {};
@@ -2162,16 +2236,31 @@ export default class NativeAlexaPeerResolverPlugin {
       return { ok: false, status: "voice_history_login_required", records: [] };
     }
 
-    const csrfResult = await fetchAlexaActivityCsrf(jar, this.config);
-    if (!csrfResult.csrf) {
+    const endTime = Date.now();
+    const startTime = endTime - VOICE_HISTORY_LOOKBACK_MS;
+    const domainResults = [];
+    const scans = [];
+    for (const domain of voiceHistoryDomainCandidates(this.config)) {
+      const scan = await scanVoiceHistoryDomain(jar, this.config, domain, startTime, endTime);
+      scans.push(scan);
+      domainResults.push(scan.summary);
+    }
+
+    const scanWithRecords = scans.find((scan) => scan.ok && scan.result?.rawRecords?.length > 0);
+    const emptySuccessfulScan = scans.find((scan) => scan.ok);
+    const failedFetchScan = scans.find((scan) => scan.result);
+    const selectedScan = scanWithRecords ?? emptySuccessfulScan ?? failedFetchScan ?? scans[0];
+
+    if (!selectedScan?.summary?.csrfPresent) {
       const status = "voice_history_csrf_failed";
       await saveVoiceHistoryStatus({
         ok: false,
         status,
         recordCount: 0,
         transcriptCount: 0,
-        httpStatus: csrfResult.httpStatus,
-        csrfPresent: false
+        httpStatus: selectedScan?.httpStatus ?? 0,
+        csrfPresent: false,
+        payloadSummary: { domainResults }
       });
       await saveStatus({
         connected: true,
@@ -2181,41 +2270,11 @@ export default class NativeAlexaPeerResolverPlugin {
         cookieDiagnostics: diagnostics,
         csrfPresent: false
       });
-      return { ok: false, status, httpStatus: csrfResult.httpStatus, records: [] };
+      return { ok: false, status, httpStatus: selectedScan?.httpStatus ?? 0, records: [] };
     }
 
-    const endTime = Date.now();
-    const startTime = endTime - VOICE_HISTORY_LOOKBACK_MS;
-    let voiceHistoryResult = await fetchVoiceHistoryV2(
-      cookie,
-      csrfResult.csrf,
-      this.config,
-      startTime,
-      endTime
-    );
-    let fallbackSummary = null;
-
-    if (voiceHistoryResult.ok && voiceHistoryResult.rawRecords.length === 0) {
-      const legacyResult = await fetchVoiceHistoryLegacy(
-        cookie,
-        csrfResult.csrf,
-        this.config,
-        startTime,
-        endTime
-      );
-      fallbackSummary = {
-        source: legacyResult.source,
-        ok: legacyResult.ok,
-        httpStatus: legacyResult.httpStatus,
-        recordCount: legacyResult.rawRecords.length,
-        payloadSummary: legacyResult.payload
-          ? voiceHistoryPayloadSummary(legacyResult.payload)
-          : null
-      };
-      if (legacyResult.ok && legacyResult.rawRecords.length > 0) {
-        voiceHistoryResult = legacyResult;
-      }
-    }
+    const voiceHistoryResult = selectedScan.result;
+    const fallbackSummary = selectedScan.fallbackSummary;
 
     if (!voiceHistoryResult.ok) {
       const status = `voice_history_failed_${voiceHistoryResult.httpStatus}`;
@@ -2225,7 +2284,8 @@ export default class NativeAlexaPeerResolverPlugin {
         recordCount: 0,
         transcriptCount: 0,
         httpStatus: voiceHistoryResult.httpStatus,
-        csrfPresent: true
+        csrfPresent: true,
+        payloadSummary: { domainResults }
       });
       await saveStatus({
         connected: true,
@@ -2242,6 +2302,8 @@ export default class NativeAlexaPeerResolverPlugin {
     const rawRecords = voiceHistoryResult.rawRecords;
     const payloadSummary = voiceHistoryPayloadSummary(payload);
     payloadSummary.source = voiceHistoryResult.source;
+    payloadSummary.domain = selectedScan.summary.domain;
+    payloadSummary.domainResults = domainResults;
     if (fallbackSummary) {
       payloadSummary.fallback = fallbackSummary;
     }
