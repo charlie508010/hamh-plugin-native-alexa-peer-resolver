@@ -1669,10 +1669,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.47";
+  static version = "0.1.48";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.47";
+  version = "0.1.48";
 
   constructor(config = {}) {
     this.context = {};
@@ -2035,6 +2035,14 @@ export default class NativeAlexaPeerResolverPlugin {
           if (location.includes("/spa/index.html")) {
             response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
             await saveStatus({ connected: true, status: "cookie_saved_without_token_exchange", loginUrl });
+            response.end();
+            return;
+          }
+
+          if (this.config.amazonDomain === "amazon.de" && location.startsWith(`https://${this.config.alexaHost}/`)) {
+            await saveCookieJar(jar);
+            response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
+            await saveStatus({ connected: true, status: "cookie_saved_german_alexa_return", loginUrl });
             response.end();
             return;
           }
