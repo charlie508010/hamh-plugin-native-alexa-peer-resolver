@@ -441,14 +441,7 @@ async function registerAppAndExchangeCookies(jar, config, loginState, accessToke
   if (!registerResponse.ok) {
     const errorText = await registerResponse.text().catch(() => "");
     await rm(LOGIN_DEVICE_FILE, { force: true }).catch(() => {});
-    await saveStatus({
-      connected: false,
-      status: `auth_register_failed_${registerResponse.status}`,
-      loginUrl: "",
-      httpStatus: registerResponse.status,
-      error: sanitizeError(errorText.slice(0, 500))
-    });
-    throw new Error(`auth_register_failed_${registerResponse.status}`);
+    throw new AuthRegisterError(registerResponse.status, errorText);
   }
 
   const registerJson = await registerResponse.json();
@@ -648,6 +641,15 @@ function sanitizeError(error) {
     .replace(/refresh_token["'=:\s]+[^"',&;\s]+/gi, "refresh_token=<redacted>")
     .replace(/csrf[:=]\s*[^;\s]+/gi, "csrf=<redacted>")
     .replace(/token[:=]\s*[^;\s]+/gi, "token=<redacted>");
+}
+
+class AuthRegisterError extends Error {
+  constructor(status, body) {
+    super(`auth_register_failed_${status}`);
+    this.name = "AuthRegisterError";
+    this.status = status;
+    this.body = sanitizeError(String(body ?? "").slice(0, 500));
+  }
 }
 
 function logInfo(context, message, fields = {}) {
@@ -1422,10 +1424,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.34";
+  static version = "0.1.35";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.34";
+  version = "0.1.35";
 
   constructor(config = {}) {
     this.context = {};
@@ -1778,7 +1780,27 @@ export default class NativeAlexaPeerResolverPlugin {
         if (location) {
           const accessToken = extractAccessToken(location);
           if (location.includes("/ap/maplanding") && accessToken) {
-            await registerAppAndExchangeCookies(jar, this.config, loginState, accessToken);
+            try {
+              await registerAppAndExchangeCookies(jar, this.config, loginState, accessToken);
+            } catch (error) {
+              if (!(error instanceof AuthRegisterError)) {
+                throw error;
+              }
+              await saveCookieJar(jar);
+              await saveStatus({
+                connected: true,
+                status: `cookie_saved_register_fallback_${error.status}`,
+                loginUrl,
+                httpStatus: error.status,
+                error: error.body
+              });
+              logWarn(this.context, "Alexa auth/register failed, using browser cookies fallback", {
+                httpStatus: error.status
+              });
+              response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
+              response.end();
+              return;
+            }
             response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
             await saveStatus({ connected: true, status: "cookie_saved", loginUrl });
             response.end();
