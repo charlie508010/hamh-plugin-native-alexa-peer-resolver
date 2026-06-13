@@ -130,7 +130,7 @@ const ALEXA_DI_OS_VERSION = "16.6";
 const ALEXA_DI_SDK_VERSION = "6.12.4";
 const ALEXA_APP_UA =
   `AmazonWebView/Amazon Alexa/${ALEXA_APP_VERSION}/iOS/${ALEXA_DI_OS_VERSION}/iPhone`;
-const VOICE_HISTORY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const VOICE_HISTORY_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 const VOICE_HISTORY_MATCH_DEDUPE_MS = 2000;
 const KNOWN_LOCAL_ALEXA_PEER_MAP = Object.freeze({
   "dc:91:bf:4f:81:32": { name: "Echo-Plus", serial: "G090XG10024605L7" },
@@ -724,6 +724,9 @@ async function saveVoiceHistoryStatus(status) {
   if (typeof status.csrfPresent === "boolean") {
     safeStatus.csrfPresent = status.csrfPresent;
   }
+  if (status.payloadSummary && typeof status.payloadSummary === "object") {
+    safeStatus.payloadSummary = status.payloadSummary;
+  }
 
   await writeJson(VOICE_HISTORY_STATUS_FILE, safeStatus);
   return safeStatus;
@@ -1254,6 +1257,37 @@ function normalizeVoiceHistoryRecords(records, config) {
     .sort((a, b) => (b.timestamp ?? 0) - (a.timestamp ?? 0));
 }
 
+function readVoiceHistoryRecordsFromPayload(payload) {
+  for (const key of [
+    "customerHistoryRecords",
+    "customerHistoryRecordList",
+    "historyRecords",
+    "records",
+    "activities",
+    "items"
+  ]) {
+    if (Array.isArray(payload?.[key])) {
+      return payload[key];
+    }
+  }
+
+  const nested =
+    payload?.response?.customerHistoryRecords ??
+    payload?.data?.customerHistoryRecords ??
+    payload?.customerHistory?.records;
+  return Array.isArray(nested) ? nested : [];
+}
+
+function voiceHistoryPayloadSummary(payload) {
+  return {
+    payloadKeys:
+      payload && typeof payload === "object" ? Object.keys(payload).slice(0, 20) : [],
+    hasCustomerHistoryRecords: Array.isArray(payload?.customerHistoryRecords),
+    hasRecords: Array.isArray(payload?.records),
+    hasActivities: Array.isArray(payload?.activities)
+  };
+}
+
 function logVoiceHistoryRecords(context, records) {
   for (const record of records) {
     logInfo(context, "Alexa voice history entry", {
@@ -1467,10 +1501,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.40";
+  static version = "0.1.41";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.40";
+  version = "0.1.41";
 
   constructor(config = {}) {
     this.context = {};
@@ -2114,9 +2148,8 @@ export default class NativeAlexaPeerResolverPlugin {
     }
 
     const payload = await response.json();
-    const rawRecords = Array.isArray(payload.customerHistoryRecords)
-      ? payload.customerHistoryRecords
-      : [];
+    const rawRecords = readVoiceHistoryRecordsFromPayload(payload);
+    const payloadSummary = voiceHistoryPayloadSummary(payload);
     const records = normalizeVoiceHistoryRecords(rawRecords, this.config);
     await writeJson(VOICE_HISTORY_FILE, records);
     await saveVoiceHistoryStatus({
@@ -2125,7 +2158,8 @@ export default class NativeAlexaPeerResolverPlugin {
       recordCount: rawRecords.length,
       transcriptCount: records.length,
       httpStatus: response.status,
-      csrfPresent: true
+      csrfPresent: true,
+      payloadSummary
     });
     await saveStatus({
       connected: true,
@@ -2136,7 +2170,8 @@ export default class NativeAlexaPeerResolverPlugin {
     });
     logInfo(this.context, "Alexa voice history scanned", {
       records: rawRecords.length,
-      transcripts: records.length
+      transcripts: records.length,
+      payloadKeys: payloadSummary.payloadKeys
     });
     if (logEntries) {
       logVoiceHistoryRecords(this.context, records);

@@ -1,6 +1,6 @@
 {
   "name": "hamh-plugin-native-alexa-peer-resolver",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "HAMH plugin for native Alexa peer discovery via browser login proxy.",
   "type": "module",
   "main": "./index.js",
