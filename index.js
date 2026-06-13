@@ -182,6 +182,20 @@ function createAndSaveProxyLoginState() {
 
 function buildAmazonLoginPath(config, loginState) {
   const amazonDomain = config.amazonDomain;
+  if (amazonDomain === "amazon.de") {
+    const params = new URLSearchParams({
+      showRmrMe: "1",
+      "openid.return_to": `https://${config.alexaHost}/`,
+      "openid.identity": "http://specs.openid.net/auth/2.0/identifier_select",
+      "openid.assoc_handle": "amzn_dp_project_dee_de",
+      "openid.mode": "checkid_setup",
+      "openid.claimed_id": "http://specs.openid.net/auth/2.0/identifier_select",
+      "openid.ns": "http://specs.openid.net/auth/2.0"
+    });
+
+    return `/www.${amazonDomain}/ap/signin?${params.toString()}`;
+  }
+
   const params = new URLSearchParams({
     "openid.return_to": `https://www.${amazonDomain}/ap/maplanding`,
     "openid.assoc_handle": "amzn_dp_project_dee_ios",
@@ -1655,10 +1669,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.46";
+  static version = "0.1.47";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.46";
+  version = "0.1.47";
 
   constructor(config = {}) {
     this.context = {};
