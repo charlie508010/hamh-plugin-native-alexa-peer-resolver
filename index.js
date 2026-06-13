@@ -652,6 +652,25 @@ class AuthRegisterError extends Error {
   }
 }
 
+function isAuthRegisterError(error) {
+  return (
+    error instanceof AuthRegisterError ||
+    String(error?.message ?? error).startsWith("auth_register_failed_")
+  );
+}
+
+function authRegisterStatus(error) {
+  if (Number.isFinite(error?.status)) {
+    return Number(error.status);
+  }
+  const match = /auth_register_failed_(\d+)/.exec(String(error?.message ?? error));
+  return match ? Number(match[1]) : 0;
+}
+
+function authRegisterBody(error) {
+  return typeof error?.body === "string" ? error.body : sanitizeError(error);
+}
+
 function logInfo(context, message, fields = {}) {
   const logger = context?.log ?? context?.logger ?? console;
   logger.info?.(message, fields);
@@ -1424,10 +1443,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.36";
+  static version = "0.1.37";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.36";
+  version = "0.1.37";
 
   constructor(config = {}) {
     this.context = {};
@@ -1783,19 +1802,20 @@ export default class NativeAlexaPeerResolverPlugin {
             try {
               await registerAppAndExchangeCookies(jar, this.config, loginState, accessToken);
             } catch (error) {
-              if (!(error instanceof AuthRegisterError)) {
+              if (!isAuthRegisterError(error)) {
                 throw error;
               }
+              const status = authRegisterStatus(error);
               await saveCookieJar(jar);
               await saveStatus({
                 connected: true,
-                status: `cookie_saved_register_fallback_${error.status}`,
+                status: `cookie_saved_register_fallback_${status || "unknown"}`,
                 loginUrl,
-                httpStatus: error.status,
-                error: error.body
+                httpStatus: status,
+                error: authRegisterBody(error)
               });
               logWarn(this.context, "Alexa auth/register failed, using browser cookies fallback", {
-                httpStatus: error.status
+                httpStatus: status
               });
               response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
               response.end();
@@ -1826,6 +1846,26 @@ export default class NativeAlexaPeerResolverPlugin {
 
         response.status(upstreamResponse.status).send(body);
       } catch (error) {
+        if (isAuthRegisterError(error)) {
+          const status = authRegisterStatus(error);
+          await saveCookieJar(jar);
+          await saveStatus({
+            connected: true,
+            status: `cookie_saved_register_fallback_${status || "unknown"}`,
+            loginUrl,
+            httpStatus: status,
+            error: authRegisterBody(error),
+            method: request.method,
+            targetHost,
+            targetPath
+          });
+          logWarn(this.context, "Alexa auth/register failed in proxy handler, using browser cookies fallback", {
+            httpStatus: status
+          });
+          response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
+          response.end();
+          return;
+        }
         const safeError = sanitizeError(error);
         await saveStatus({
           connected: false,
