@@ -943,6 +943,16 @@ function voiceHistoryRecordsUrl(config, startTime, endTime) {
   return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/rvh/customer-history-records-v2?startTime=${startTime}&endTime=${endTime}`;
 }
 
+function voiceHistoryLegacyRecordsUrl(config, startTime, endTime) {
+  const params = new URLSearchParams({
+    startTime: String(startTime),
+    endTime: String(endTime),
+    recordType: "VOICE_HISTORY",
+    maxRecordSize: "50"
+  });
+  return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/rvh/customer-history-records?${params.toString()}`;
+}
+
 function sanitizeAlexaDevice(device) {
   return {
     accountName: device.accountName ?? device.deviceAccountName ?? device.name ?? null,
@@ -1288,6 +1298,71 @@ function voiceHistoryPayloadSummary(payload) {
   };
 }
 
+async function fetchVoiceHistoryV2(cookie, csrf, config, startTime, endTime) {
+  const response = await fetch(
+    voiceHistoryRecordsUrl(config, startTime, endTime),
+    {
+      method: "POST",
+      redirect: "manual",
+      headers: {
+        Cookie: cookie,
+        "anti-csrftoken-a2z": csrf,
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        Accept: "application/json, text/plain, */*",
+        "Content-Type": "application/json",
+        Referer: voiceHistoryActivityUrl(config),
+        Origin: `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}`,
+        "X-Requested-With": "XMLHttpRequest"
+      },
+      body: JSON.stringify({ previousRequestToken: null })
+    }
+  );
+  return readVoiceHistoryResponse(response, "v2");
+}
+
+async function fetchVoiceHistoryLegacy(cookie, csrf, config, startTime, endTime) {
+  const response = await fetch(
+    voiceHistoryLegacyRecordsUrl(config, startTime, endTime),
+    {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        Cookie: cookie,
+        "anti-csrftoken-a2z": csrf,
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        Accept: "application/json, text/plain, */*",
+        Referer: voiceHistoryActivityUrl(config),
+        Origin: `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}`,
+        "X-Requested-With": "XMLHttpRequest"
+      }
+    }
+  );
+  return readVoiceHistoryResponse(response, "legacy");
+}
+
+async function readVoiceHistoryResponse(response, source) {
+  if (!response.ok) {
+    return {
+      ok: false,
+      source,
+      httpStatus: response.status,
+      payload: null,
+      rawRecords: []
+    };
+  }
+
+  const payload = await response.json();
+  return {
+    ok: true,
+    source,
+    httpStatus: response.status,
+    payload,
+    rawRecords: readVoiceHistoryRecordsFromPayload(payload)
+  };
+}
+
 function logVoiceHistoryRecords(context, records) {
   for (const record of records) {
     logInfo(context, "Alexa voice history entry", {
@@ -1501,10 +1576,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.41";
+  static version = "0.1.42";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.41";
+  version = "0.1.42";
 
   constructor(config = {}) {
     this.context = {};
@@ -2106,34 +2181,35 @@ export default class NativeAlexaPeerResolverPlugin {
 
     const endTime = Date.now();
     const startTime = endTime - VOICE_HISTORY_LOOKBACK_MS;
-    const response = await fetch(
-      voiceHistoryRecordsUrl(this.config, startTime, endTime),
-      {
-        method: "POST",
-        redirect: "manual",
-        headers: {
-          Cookie: cookie,
-          "anti-csrftoken-a2z": csrfResult.csrf,
-          "User-Agent": BROWSER_UA,
-          "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-          Accept: "application/json, text/plain, */*",
-          "Content-Type": "application/json",
-          Referer: voiceHistoryActivityUrl(this.config),
-          Origin: `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}`,
-          "X-Requested-With": "XMLHttpRequest"
-        },
-        body: JSON.stringify({ previousRequestToken: null })
-      }
+    let voiceHistoryResult = await fetchVoiceHistoryV2(
+      cookie,
+      csrfResult.csrf,
+      this.config,
+      startTime,
+      endTime
     );
 
-    if (!response.ok) {
-      const status = `voice_history_failed_${response.status}`;
+    if (voiceHistoryResult.ok && voiceHistoryResult.rawRecords.length === 0) {
+      const legacyResult = await fetchVoiceHistoryLegacy(
+        cookie,
+        csrfResult.csrf,
+        this.config,
+        startTime,
+        endTime
+      );
+      if (legacyResult.ok && legacyResult.rawRecords.length > 0) {
+        voiceHistoryResult = legacyResult;
+      }
+    }
+
+    if (!voiceHistoryResult.ok) {
+      const status = `voice_history_failed_${voiceHistoryResult.httpStatus}`;
       await saveVoiceHistoryStatus({
         ok: false,
         status,
         recordCount: 0,
         transcriptCount: 0,
-        httpStatus: response.status,
+        httpStatus: voiceHistoryResult.httpStatus,
         csrfPresent: true
       });
       await saveStatus({
@@ -2144,12 +2220,13 @@ export default class NativeAlexaPeerResolverPlugin {
         cookieDiagnostics: diagnostics,
         csrfPresent: true
       });
-      return { ok: false, status, httpStatus: response.status, records: [] };
+      return { ok: false, status, httpStatus: voiceHistoryResult.httpStatus, records: [] };
     }
 
-    const payload = await response.json();
-    const rawRecords = readVoiceHistoryRecordsFromPayload(payload);
+    const payload = voiceHistoryResult.payload;
+    const rawRecords = voiceHistoryResult.rawRecords;
     const payloadSummary = voiceHistoryPayloadSummary(payload);
+    payloadSummary.source = voiceHistoryResult.source;
     const records = normalizeVoiceHistoryRecords(rawRecords, this.config);
     await writeJson(VOICE_HISTORY_FILE, records);
     await saveVoiceHistoryStatus({
@@ -2157,7 +2234,7 @@ export default class NativeAlexaPeerResolverPlugin {
       status: "voice_history_scanned",
       recordCount: rawRecords.length,
       transcriptCount: records.length,
-      httpStatus: response.status,
+      httpStatus: voiceHistoryResult.httpStatus,
       csrfPresent: true,
       payloadSummary
     });
@@ -2171,6 +2248,7 @@ export default class NativeAlexaPeerResolverPlugin {
     logInfo(this.context, "Alexa voice history scanned", {
       records: rawRecords.length,
       transcripts: records.length,
+      source: voiceHistoryResult.source,
       payloadKeys: payloadSummary.payloadKeys
     });
     if (logEntries) {
@@ -2182,7 +2260,7 @@ export default class NativeAlexaPeerResolverPlugin {
       status: "voice_history_scanned",
       totalRecords: rawRecords.length,
       transcriptRecords: records.length,
-      httpStatus: response.status,
+      httpStatus: voiceHistoryResult.httpStatus,
       records
     };
   }
