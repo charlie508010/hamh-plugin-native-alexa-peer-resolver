@@ -174,6 +174,12 @@ function loadOrCreateProxyLoginState() {
   return created;
 }
 
+function createAndSaveProxyLoginState() {
+  const created = createProxyLoginState();
+  writeJsonSync(LOGIN_DEVICE_FILE, created);
+  return created;
+}
+
 function buildAmazonLoginPath(config, loginState) {
   const amazonDomain = AMAZON_LOGIN_BASE_DOMAIN;
   const params = new URLSearchParams({
@@ -434,11 +440,13 @@ async function registerAppAndExchangeCookies(jar, config, loginState, accessToke
 
   if (!registerResponse.ok) {
     const errorText = await registerResponse.text().catch(() => "");
+    await rm(LOGIN_DEVICE_FILE, { force: true }).catch(() => {});
     await saveStatus({
       connected: false,
       status: `auth_register_failed_${registerResponse.status}`,
       loginUrl: "",
-      error: errorText.slice(0, 500)
+      httpStatus: registerResponse.status,
+      error: sanitizeError(errorText.slice(0, 500))
     });
     throw new Error(`auth_register_failed_${registerResponse.status}`);
   }
@@ -1414,10 +1422,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.33";
+  static version = "0.1.34";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.33";
+  version = "0.1.34";
 
   constructor(config = {}) {
     this.context = {};
@@ -1723,11 +1731,11 @@ export default class NativeAlexaPeerResolverPlugin {
     }
 
     const app = express();
-    const jar = await loadCookieJar();
+    const jar = new CookieJar();
     const loginUrl = `http://${this.config.proxyHost}:${this.config.proxyPort}/`;
-    const loginState = loadOrCreateProxyLoginState();
+    const loginState = createAndSaveProxyLoginState();
     seedLoginCookies(jar, loginState);
-    await saveCookieJar(jar);
+    await saveStatus({ connected: false, status: "proxy_login_required", loginUrl });
 
     app.get("/health", (_request, response) => response.json({ ok: true }));
     app.get("/", (_request, response) => response.redirect(buildAmazonLoginPath(this.config, loginState)));
