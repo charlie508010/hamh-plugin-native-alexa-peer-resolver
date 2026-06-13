@@ -181,7 +181,7 @@ function createAndSaveProxyLoginState() {
 }
 
 function buildAmazonLoginPath(config, loginState) {
-  const amazonDomain = AMAZON_LOGIN_BASE_DOMAIN;
+  const amazonDomain = config.amazonDomain;
   const params = new URLSearchParams({
     "openid.return_to": `https://www.${amazonDomain}/ap/maplanding`,
     "openid.assoc_handle": "amzn_dp_project_dee_ios",
@@ -812,6 +812,12 @@ function extractCsrfFromCookies(jar, config) {
 
 function extractCsrfFromText(text) {
   const patterns = [
+    /anti-csrftoken-a2z["']?\s*[:=]\s*["']([^"']+)["']/i,
+    /csrfToken["']?\s*[:=]\s*["']([^"']+)["']/i,
+    /csrf-token["']?\s*[:=]\s*["']([^"']+)["']/i,
+    /data-csrf-token=["']([^"']+)["']/i,
+    /meta\s+name=["']csrf-token["']\s+content=["']([^"']+)["']/i,
+    /meta\s+content=["']([^"']+)["']\s+name=["']csrf-token["']/i,
     /csrf["']?\s*[:=]\s*["']([^"']+)["']/i,
     /name=["']csrf["'][^>]*value=["']([^"']+)["']/i,
     /value=["']([^"']+)["'][^>]*name=["']csrf["']/i
@@ -870,42 +876,60 @@ async function fetchAlexaCsrf(jar, config) {
 
 async function fetchAlexaActivityCsrf(jar, config) {
   const cookie = mergedCookieString(jar, config);
-  const activityUrl = voiceHistoryActivityUrl(config);
-  const response = await fetch(activityUrl, {
-    method: "GET",
-    redirect: "manual",
-    headers: {
-      Cookie: cookie,
-      "User-Agent": BROWSER_UA,
-      "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
-      Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-      Referer: `https://www.${config.amazonDomain}/`,
-      Origin: `https://www.${config.amazonDomain}`
-    }
-  });
+  const domains = [
+    config.amazonDomain,
+    AMAZON_LOGIN_BASE_DOMAIN
+  ].filter((domain, index, all) => all.indexOf(domain) === index);
+  let lastResult = { csrf: "", httpStatus: 0, location: "" };
 
-  const setCookie = response.headers.get("set-cookie");
-  if (setCookie) {
-    jar.setCookieSync(setCookie, `https://www.${config.amazonDomain}/`, {
-      ignoreError: true
+  for (const domain of domains) {
+    const activityUrl = voiceHistoryActivityUrl({ ...config, amazonDomain: domain });
+    const response = await fetch(activityUrl, {
+      method: "GET",
+      redirect: "manual",
+      headers: {
+        Cookie: cookie,
+        "User-Agent": BROWSER_UA,
+        "Accept-Language": "de-DE,de;q=0.9,en;q=0.8",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Referer: `https://www.${domain}/`,
+        Origin: `https://www.${domain}`
+      }
     });
-    await saveCookieJar(jar);
-  }
 
-  if (!response.ok) {
-    return {
+    for (const setCookie of upstreamSetCookies(response)) {
+      jar.setCookieSync(setCookie, `https://www.${domain}/`, {
+        ignoreError: true
+      });
+    }
+    await saveCookieJar(jar);
+
+    lastResult = {
       csrf: "",
       httpStatus: response.status,
       location: response.headers.get("location") ?? ""
     };
+
+    const csrfFromCookie = extractCsrfFromCookies(jar, {
+      ...config,
+      amazonDomain: domain
+    });
+    if (csrfFromCookie) {
+      return { csrf: csrfFromCookie, httpStatus: response.status, location: "" };
+    }
+
+    if (!response.ok) {
+      continue;
+    }
+
+    const text = await response.text().catch(() => "");
+    const csrf = extractCsrfFromText(text);
+    if (csrf) {
+      return { csrf, httpStatus: response.status, location: "" };
+    }
   }
 
-  const text = await response.text().catch(() => "");
-  const csrf =
-    /meta name="csrf-token" content="([^"]+)"/i.exec(text)?.[1] ??
-    extractCsrfFromText(text);
-
-  return { csrf, httpStatus: response.status, location: "" };
+  return lastResult;
 }
 
 function voiceHistoryActivityUrl(config) {
@@ -1443,10 +1467,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.38";
+  static version = "0.1.39";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.38";
+  version = "0.1.39";
 
   constructor(config = {}) {
     this.context = {};
