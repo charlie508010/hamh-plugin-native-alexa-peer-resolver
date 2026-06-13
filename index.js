@@ -1443,10 +1443,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.37";
+  static version = "0.1.38";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.37";
+  version = "0.1.38";
 
   constructor(config = {}) {
     this.context = {};
@@ -1799,30 +1799,9 @@ export default class NativeAlexaPeerResolverPlugin {
         if (location) {
           const accessToken = extractAccessToken(location);
           if (location.includes("/ap/maplanding") && accessToken) {
-            try {
-              await registerAppAndExchangeCookies(jar, this.config, loginState, accessToken);
-            } catch (error) {
-              if (!isAuthRegisterError(error)) {
-                throw error;
-              }
-              const status = authRegisterStatus(error);
-              await saveCookieJar(jar);
-              await saveStatus({
-                connected: true,
-                status: `cookie_saved_register_fallback_${status || "unknown"}`,
-                loginUrl,
-                httpStatus: status,
-                error: authRegisterBody(error)
-              });
-              logWarn(this.context, "Alexa auth/register failed, using browser cookies fallback", {
-                httpStatus: status
-              });
-              response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
-              response.end();
-              return;
-            }
+            await saveCookieJar(jar);
             response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
-            await saveStatus({ connected: true, status: "cookie_saved", loginUrl });
+            await saveStatus({ connected: true, status: "cookie_saved_browser_only", loginUrl });
             response.end();
             return;
           }
