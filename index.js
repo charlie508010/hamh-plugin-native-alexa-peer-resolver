@@ -940,7 +940,13 @@ function voiceHistoryActivityUrl(config) {
 }
 
 function voiceHistoryRecordsUrl(config, startTime, endTime) {
-  return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/rvh/customer-history-records-v2?startTime=${startTime}&endTime=${endTime}`;
+  const params = new URLSearchParams({
+    startTime: String(startTime),
+    endTime: String(endTime),
+    recordType: "VOICE_HISTORY",
+    maxRecordSize: "50"
+  });
+  return `https://www.${VOICE_HISTORY_AMAZON_DOMAIN}/alexa-privacy/apd/rvh/customer-history-records-v2?${params.toString()}`;
 }
 
 function voiceHistoryLegacyRecordsUrl(config, startTime, endTime) {
@@ -1576,10 +1582,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.42";
+  static version = "0.1.43";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.42";
+  version = "0.1.43";
 
   constructor(config = {}) {
     this.context = {};
@@ -2188,6 +2194,7 @@ export default class NativeAlexaPeerResolverPlugin {
       startTime,
       endTime
     );
+    let fallbackSummary = null;
 
     if (voiceHistoryResult.ok && voiceHistoryResult.rawRecords.length === 0) {
       const legacyResult = await fetchVoiceHistoryLegacy(
@@ -2197,6 +2204,15 @@ export default class NativeAlexaPeerResolverPlugin {
         startTime,
         endTime
       );
+      fallbackSummary = {
+        source: legacyResult.source,
+        ok: legacyResult.ok,
+        httpStatus: legacyResult.httpStatus,
+        recordCount: legacyResult.rawRecords.length,
+        payloadSummary: legacyResult.payload
+          ? voiceHistoryPayloadSummary(legacyResult.payload)
+          : null
+      };
       if (legacyResult.ok && legacyResult.rawRecords.length > 0) {
         voiceHistoryResult = legacyResult;
       }
@@ -2227,6 +2243,9 @@ export default class NativeAlexaPeerResolverPlugin {
     const rawRecords = voiceHistoryResult.rawRecords;
     const payloadSummary = voiceHistoryPayloadSummary(payload);
     payloadSummary.source = voiceHistoryResult.source;
+    if (fallbackSummary) {
+      payloadSummary.fallback = fallbackSummary;
+    }
     const records = normalizeVoiceHistoryRecords(rawRecords, this.config);
     await writeJson(VOICE_HISTORY_FILE, records);
     await saveVoiceHistoryStatus({
