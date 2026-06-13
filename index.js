@@ -740,6 +740,9 @@ async function saveVoiceHistoryStatus(status) {
   if (status.payloadSummary && typeof status.payloadSummary === "object") {
     safeStatus.payloadSummary = status.payloadSummary;
   }
+  if (status.lastScan && typeof status.lastScan === "object") {
+    safeStatus.lastScan = status.lastScan;
+  }
 
   await writeJson(VOICE_HISTORY_STATUS_FILE, safeStatus);
   return safeStatus;
@@ -1678,10 +1681,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.49";
+  static version = "0.1.50";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.49";
+  version = "0.1.50";
 
   constructor(config = {}) {
     this.context = {};
@@ -2247,7 +2250,11 @@ export default class NativeAlexaPeerResolverPlugin {
         ok: false,
         status: "voice_history_disabled",
         recordCount: 0,
-        transcriptCount: 0
+        transcriptCount: 0,
+        lastScan: {
+          at: new Date().toISOString(),
+          status: "voice_history_disabled"
+        }
       });
       return { ok: false, status: "voice_history_disabled", records: [] };
     }
@@ -2261,7 +2268,11 @@ export default class NativeAlexaPeerResolverPlugin {
         ok: false,
         status: "voice_history_login_required",
         recordCount: 0,
-        transcriptCount: 0
+        transcriptCount: 0,
+        lastScan: {
+          at: new Date().toISOString(),
+          status: "voice_history_login_required"
+        }
       });
       await saveStatus({
         connected: false,
@@ -2296,7 +2307,14 @@ export default class NativeAlexaPeerResolverPlugin {
         transcriptCount: 0,
         httpStatus: selectedScan?.httpStatus ?? 0,
         csrfPresent: false,
-        payloadSummary: { domainResults }
+        payloadSummary: { domainResults },
+        lastScan: {
+          at: new Date().toISOString(),
+          status,
+          selectedDomain: selectedScan?.summary?.domain ?? "",
+          selectedHttpStatus: selectedScan?.httpStatus ?? 0,
+          selectedCsrfPresent: false
+        }
       });
       await saveStatus({
         connected: true,
@@ -2321,7 +2339,15 @@ export default class NativeAlexaPeerResolverPlugin {
         transcriptCount: 0,
         httpStatus: voiceHistoryResult.httpStatus,
         csrfPresent: true,
-        payloadSummary: { domainResults }
+        payloadSummary: { domainResults },
+        lastScan: {
+          at: new Date().toISOString(),
+          status,
+          selectedDomain: selectedScan.summary.domain,
+          selectedSource: voiceHistoryResult.source,
+          selectedHttpStatus: voiceHistoryResult.httpStatus,
+          selectedCsrfPresent: true
+        }
       });
       await saveStatus({
         connected: true,
@@ -2352,7 +2378,17 @@ export default class NativeAlexaPeerResolverPlugin {
       transcriptCount: records.length,
       httpStatus: voiceHistoryResult.httpStatus,
       csrfPresent: true,
-      payloadSummary
+      payloadSummary,
+      lastScan: {
+        at: new Date().toISOString(),
+        status: "voice_history_scanned",
+        selectedDomain: selectedScan.summary.domain,
+        selectedSource: voiceHistoryResult.source,
+        selectedHttpStatus: voiceHistoryResult.httpStatus,
+        selectedRecordCount: rawRecords.length,
+        selectedTranscriptCount: records.length,
+        selectedCsrfPresent: true
+      }
     });
     await saveStatus({
       connected: true,
@@ -2382,6 +2418,8 @@ export default class NativeAlexaPeerResolverPlugin {
   }
 
   async deleteCookie() {
+    await this.stop();
+
     for (const file of [
       COOKIE_FILE,
       COOKIE_COPY_FILE,
@@ -2394,6 +2432,16 @@ export default class NativeAlexaPeerResolverPlugin {
     }
 
     await saveStatus({ connected: false, status: "login_required", loginUrl: "" });
+    await saveVoiceHistoryStatus({
+      ok: false,
+      status: "login_required",
+      recordCount: 0,
+      transcriptCount: 0,
+      lastScan: {
+        at: new Date().toISOString(),
+        status: "cleared_by_delete_connection"
+      }
+    });
     logWarn(this.context, "Alexa cookie deleted");
     return { ok: true, status: "login_required" };
   }
