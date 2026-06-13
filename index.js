@@ -781,8 +781,17 @@ function cookieDiagnostics(jar, config) {
 function isCookieJarAuthenticated(jar, config) {
   const cookieNames = cookieDiagnostics(jar, config).map((cookie) => cookie.key.toLowerCase());
 
-  return cookieNames.some((name) =>
-    ["at-main", "sess-at-main", "ubid-main", "csrf", "x-main"].includes(name)
+  return cookieNames.some(
+    (name) =>
+      ["csrf", "csrf-token", "csrftoken"].includes(name) ||
+      name === "at-main" ||
+      name === "sess-at-main" ||
+      name === "ubid-main" ||
+      name === "x-main" ||
+      name.startsWith("at-") ||
+      name.startsWith("sess-at-") ||
+      name.startsWith("ubid-") ||
+      name.startsWith("x-")
   );
 }
 
@@ -1669,10 +1678,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.48";
+  static version = "0.1.49";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.48";
+  version = "0.1.49";
 
   constructor(config = {}) {
     this.context = {};
@@ -2042,7 +2051,12 @@ export default class NativeAlexaPeerResolverPlugin {
           if (this.config.amazonDomain === "amazon.de" && location.startsWith(`https://${this.config.alexaHost}/`)) {
             await saveCookieJar(jar);
             response.status(302).setHeader("location", `http://${this.config.proxyHost}:${this.config.proxyPort}/cookie-success`);
-            await saveStatus({ connected: true, status: "cookie_saved_german_alexa_return", loginUrl });
+            await saveStatus({
+              connected: true,
+              status: "cookie_saved_german_alexa_return",
+              loginUrl,
+              cookieDiagnostics: cookieDiagnostics(jar, this.config)
+            });
             response.end();
             return;
           }
