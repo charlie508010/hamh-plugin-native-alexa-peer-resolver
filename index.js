@@ -102,6 +102,7 @@ const DEFAULT_CONFIG = Object.freeze({
 
 const DATA_ROOT = "/config/data";
 const SQLITE_ROOT = path.join(DATA_ROOT, "sqlite");
+const FILE_ROOT = path.join(DATA_ROOT, "file");
 const STORAGE_BACKEND =
   process.env.HAMH_STORAGE_BACKEND === "file" ? "file" : "sqlite";
 const ACTIVE_ROOT = path.join(DATA_ROOT, STORAGE_BACKEND);
@@ -620,6 +621,15 @@ function hasAnyJsonValue(value) {
   return value != null;
 }
 
+function allStorageFiles(fileName) {
+  return [
+    path.join(ACTIVE_ROOT, fileName),
+    path.join(DATA_ROOT, fileName),
+    path.join(SQLITE_ROOT, fileName),
+    path.join(FILE_ROOT, fileName)
+  ].filter((file, index, all) => all.indexOf(file) === index);
+}
+
 async function readJson(file, fallback = undefined) {
   try {
     return JSON.parse(await readFile(file, "utf8"));
@@ -711,6 +721,12 @@ async function saveStatus(status) {
   }
   if (typeof status.csrfPresent === "boolean") {
     safeStatus.csrfPresent = status.csrfPresent;
+  }
+  if (typeof status.httpStatus === "number") {
+    safeStatus.httpStatus = status.httpStatus;
+  }
+  if (status.lastScan && typeof status.lastScan === "object") {
+    safeStatus.lastScan = status.lastScan;
   }
 
   await writeJson(STATUS_FILE, safeStatus);
@@ -1681,10 +1697,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.50";
+  static version = "0.1.51";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.50";
+  version = "0.1.51";
 
   constructor(config = {}) {
     this.context = {};
@@ -2179,7 +2195,16 @@ export default class NativeAlexaPeerResolverPlugin {
         loginUrl: "",
         error: status,
         cookieDiagnostics: diagnostics,
-        csrfPresent: Boolean(csrf)
+        csrfPresent: Boolean(csrf),
+        httpStatus: response.status,
+        lastScan: {
+          at: new Date().toISOString(),
+          type: "devices",
+          status,
+          endpoint: "devices-v2",
+          httpStatus: response.status,
+          csrfPresent: Boolean(csrf)
+        }
       });
       return { ok: false, status, httpStatus: response.status };
     }
@@ -2213,7 +2238,19 @@ export default class NativeAlexaPeerResolverPlugin {
       status,
       loginUrl: "",
       cookieDiagnostics: diagnostics,
-      csrfPresent: Boolean(csrf)
+      csrfPresent: Boolean(csrf),
+      httpStatus: response.status,
+      lastScan: {
+        at: new Date().toISOString(),
+        type: "devices",
+        status,
+        endpoint: "devices-v2",
+        httpStatus: response.status,
+        deviceCount: devices.length,
+        devicesWithMac: macCount,
+        matchedDevices: Object.keys(macCount > 0 ? peerMap : knownLocalPeerMap).length,
+        csrfPresent: Boolean(csrf)
+      }
     });
     logInfo(this.context, "Alexa devices scanned", {
       devices: devices.length,
@@ -2420,18 +2457,32 @@ export default class NativeAlexaPeerResolverPlugin {
   async deleteCookie() {
     await this.stop();
 
-    for (const file of [
-      COOKIE_FILE,
-      COOKIE_COPY_FILE,
-      PEER_MAP_FILE,
-      PEER_MAP_COPY_FILE,
-      VOICE_HISTORY_FILE,
-      VOICE_HISTORY_STATUS_FILE
-    ]) {
+    const filesToDelete = [
+      "alexa-cookie.json",
+      "alexa-login-device.json",
+      "alexa-login-status.json",
+      "alexa-devices.json",
+      "alexa-devices-sanitized.json",
+      "alexa-peer-map.json",
+      "alexa-voice-history.json",
+      "alexa-voice-history-status.json"
+    ].flatMap(allStorageFiles);
+
+    for (const file of filesToDelete) {
       await rm(file, { force: true });
     }
 
-    await saveStatus({ connected: false, status: "login_required", loginUrl: "" });
+    const deletedFiles = filesToDelete.length;
+    await saveStatus({
+      connected: false,
+      status: "login_required",
+      loginUrl: "",
+      lastScan: {
+        at: new Date().toISOString(),
+        status: "cleared_by_delete_connection",
+        deletedFiles
+      }
+    });
     await saveVoiceHistoryStatus({
       ok: false,
       status: "login_required",
@@ -2439,11 +2490,12 @@ export default class NativeAlexaPeerResolverPlugin {
       transcriptCount: 0,
       lastScan: {
         at: new Date().toISOString(),
-        status: "cleared_by_delete_connection"
+        status: "cleared_by_delete_connection",
+        deletedFiles
       }
     });
-    logWarn(this.context, "Alexa cookie deleted");
-    return { ok: true, status: "login_required" };
+    logWarn(this.context, "Alexa cookie deleted", { deletedFiles });
+    return { ok: true, status: "login_required", deletedFiles };
   }
 
   async stop() {
