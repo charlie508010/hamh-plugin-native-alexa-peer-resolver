@@ -279,7 +279,7 @@ function targetPathFromRequest(request, mountPath) {
   return request.url || "/";
 }
 
-function copyRequestHeaders(request, config, loginState) {
+function copyRequestHeaders(request, config, loginState, targetHost) {
   const headers = new Headers();
   for (const [name, value] of Object.entries(request.headers)) {
     const lower = name.toLowerCase();
@@ -294,8 +294,8 @@ function copyRequestHeaders(request, config, loginState) {
   }
 
   headers.set("cookie", addInitialCookies(headers.get("cookie") ?? "", loginState.initialCookies));
-  headers.set("user-agent", ALEXA_APP_UA);
-  headers.set("accept-language", "de-DE");
+  headers.set("user-agent", BROWSER_UA);
+  headers.set("accept-language", "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7");
 
   const referer = headers.get("referer");
   if (referer) {
@@ -303,7 +303,7 @@ function copyRequestHeaders(request, config, loginState) {
   }
 
   if (headers.has("origin")) {
-    headers.set("origin", `https://www.${config.amazonDomain}`);
+    headers.set("origin", `https://${targetHost}`);
   }
 
   return headers;
@@ -1424,10 +1424,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.35";
+  static version = "0.1.36";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.35";
+  version = "0.1.36";
 
   constructor(config = {}) {
     this.context = {};
@@ -1755,7 +1755,7 @@ export default class NativeAlexaPeerResolverPlugin {
       try {
         const upstreamResponse = await fetch(targetUrl, {
           method: request.method,
-          headers: copyRequestHeaders(request, this.config, loginState),
+          headers: copyRequestHeaders(request, this.config, loginState, targetHost),
           body: await readRequestBody(request),
           redirect: "manual"
         });
@@ -1826,8 +1826,17 @@ export default class NativeAlexaPeerResolverPlugin {
 
         response.status(upstreamResponse.status).send(body);
       } catch (error) {
-        await saveStatus({ connected: false, status: "proxy_request_failed", loginUrl, error: sanitizeError(error) });
-        response.status(502).type("text/plain").send(`Proxy request failed: ${sanitizeError(error)}`);
+        const safeError = sanitizeError(error);
+        await saveStatus({
+          connected: false,
+          status: "proxy_request_failed",
+          loginUrl,
+          error: safeError,
+          method: request.method,
+          targetHost,
+          targetPath
+        });
+        response.status(502).type("text/plain").send(`Proxy request failed: ${safeError}`);
       }
     };
 
