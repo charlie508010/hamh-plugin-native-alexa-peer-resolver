@@ -124,7 +124,7 @@ const SQLITE_MATTER_PEERS_FILE = path.join(SQLITE_ROOT, "matter-peers.json");
 const BROWSER_UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
 const AMAZON_LOGIN_BASE_DOMAIN = "amazon.com";
-const VOICE_HISTORY_AMAZON_DOMAIN = "amazon.com";
+const VOICE_HISTORY_AMAZON_DOMAIN = "amazon.de";
 const ALEXA_APP_VERSION = "2.2.556530.0";
 const ALEXA_DI_OS_VERSION = "16.6";
 const ALEXA_DI_SDK_VERSION = "6.12.4";
@@ -1582,10 +1582,10 @@ export default class NativeAlexaPeerResolverPlugin {
   static hamhPluginApiVersion = 1;
   static id = "hamh-plugin-native-alexa-peer-resolver";
   static name = "Native Alexa Peer Resolver";
-  static version = "0.1.43";
+  static version = "0.1.44";
 
   name = "hamh-plugin-native-alexa-peer-resolver";
-  version = "0.1.43";
+  version = "0.1.44";
 
   constructor(config = {}) {
     this.context = {};
